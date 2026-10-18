@@ -112,6 +112,17 @@ class Instance:
         except ValueError:
             raise Failure("dm %s printed %r %r" % (" ".join(args), out.stdout, out.stderr))
 
+    def dm_raw(self, payload):
+        """Send a raw command to the engine's socket, as the browser host does."""
+        code = ("import json, sys; sys.path.insert(0, %r); from client import request; "
+                "print(json.dumps(request(json.loads(sys.argv[1]), timeout=25)))" % os.path.join(ROOT, "daemon"))
+        out = subprocess.run([sys.executable, "-B", "-c", code, json.dumps(payload)], env=self.env,
+                             capture_output=True, text=True, timeout=30)
+        try:
+            return json.loads(out.stdout)
+        except ValueError:
+            raise Failure("raw command printed %r %r" % (out.stdout, out.stderr))
+
     def state(self):
         reply = self.dm("status")
         return reply.get("state") if reply.get("ok") else None
@@ -362,6 +373,72 @@ def t_network_outage(inst):
         srv.shutdown()
 
 
+def t_browser_handoff(inst):
+    # What the extension sends: cookies, referrer and user agent, verified first.
+    reply = inst.dm_raw({"cmd": "add", "url": inst.base + "/login/members.zip?size=%d" % SIZE,
+                         "headers": ["Cookie: session=ok; theme=dark"], "referer": "https://example.com/files",
+                         "user_agent": "TestBrowser/1.0", "mime": "application/zip", "verify": True,
+                         "source": "browser"})
+    check(reply.get("ok"), "verified hand-off refused: %s" % reply)
+    job = expect_done(inst, reply["job"]["id"], "members.zip", SIZE)
+    check(job["source"] == "browser", "source not recorded")
+    downloads = [s for s in server.seen if s[0].startswith("/login/members.zip") and s[1]]
+    check(downloads, "server never saw the download")
+    for path, cookie, referer, agent in downloads:
+        check("session=ok" in cookie, "cookie missing on %s" % path)
+        check(referer == "https://example.com/files", "referer missing: %r" % referer)
+        check(agent == "TestBrowser/1.0", "user agent not passed: %r" % agent)
+
+
+def t_verify_refuses(inst):
+    # No login cookie: the site answers with a login page, so dm must decline
+    # and leave the download to the browser, creating no job.
+    reply = inst.dm_raw({"cmd": "add", "url": inst.base + "/login/locked.zip", "mime": "application/zip",
+                         "verify": True})
+    check(reply.get("ok") is False and reply.get("refused"), "login page accepted: %s" % reply)
+    check("web page" in reply["error"], "unclear reason: %s" % reply["error"])
+    reply = inst.dm_raw({"cmd": "add", "url": inst.base + "/status/403", "verify": True})
+    check(reply.get("ok") is False and "403" in reply["error"], "403 accepted: %s" % reply)
+    check(inst.state()["jobs"] == [], "a refused hand-off left a job behind")
+    # Asking for a web page on purpose is fine.
+    reply = inst.dm_raw({"cmd": "add", "url": inst.base + "/login/page.html", "mime": "text/html", "verify": True})
+    check(reply.get("ok"), "an expected web page was refused: %s" % reply)
+
+
+def t_native_host(inst):
+    # The bridge the browser starts: length-prefixed JSON on stdin/stdout.
+    import struct
+
+    def talk(*messages):
+        data = b"".join(struct.pack("=I", len(m)) + m for m in (json.dumps(x).encode() for x in messages))
+        out = subprocess.run([os.path.join(ROOT, "bin", "dm-native-host")], input=data, env=inst.env,
+                             capture_output=True, timeout=30).stdout
+        replies = []
+        while out:
+            (n,) = struct.unpack("=I", out[:4])
+            replies.append(json.loads(out[4:4 + n]))
+            out = out[4 + n:]
+        return replies
+
+    ping, = talk({"cmd": "ping"})
+    check(ping.get("ok") and ping.get("version"), "ping failed: %s" % ping)
+    added, = talk({"cmd": "add", "url": inst.base + "/login/viahost.bin?size=%d" % SIZE, "cookies": "session=ok",
+                   "referer": "https://example.com/", "user_agent": "TestBrowser/1.0",
+                   "mime": "application/octet-stream", "verify": True})
+    check(added.get("ok"), "add through the host failed: %s" % added)
+    job = expect_done(inst, added["job"]["id"], "viahost.bin", SIZE)
+    looked, = talk({"cmd": "job", "id": job["id"]})
+    check(looked.get("ok") and looked["job"]["status"] == "done", "job lookup failed: %s" % looked)
+    refused, = talk({"cmd": "add", "url": inst.base + "/login/nope.bin", "mime": "application/octet-stream",
+                     "verify": True})
+    check(refused.get("ok") is False and refused.get("refused"), "host passed a refusal through as ok")
+    bad, = talk({"cmd": "add", "url": inst.base + "/ok/x.bin", "cookies": "a=b\r\nX-Evil: 1"})
+    check(bad.get("ok") is False, "header injection through cookies accepted")
+    inst.stop()
+    offline, = talk({"cmd": "ping"})
+    check(offline.get("ok") is False and offline.get("offline"), "offline engine not reported: %s" % offline)
+
+
 def t_security(inst):
     run = os.path.join(inst.run_dir, "dm")
     for name in ("ctl.sock", "aria2.conf"):
@@ -423,6 +500,7 @@ TESTS = [
     ("not-found", t_not_found), ("forbidden", t_forbidden), ("server-error-retries", t_server_error_retries),
     ("checksum", t_checksum), ("same-name-twice", t_same_name_twice), ("pause-resume", t_pause_resume),
     ("cancel", t_cancel), ("kill-daemon", t_kill_daemon), ("kill-aria2", t_kill_aria2), ("network-outage", t_network_outage),
+    ("browser-handoff", t_browser_handoff), ("verify-refuses", t_verify_refuses), ("native-host", t_native_host),
     ("security", t_security), ("config-injection", t_config_injection),
 ]
 

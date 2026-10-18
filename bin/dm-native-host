@@ -1,0 +1,114 @@
+#!/usr/bin/python3 -Bs
+"""Native messaging host: the bridge between dm's browser extension and dmd.
+
+The browser starts this program for each message from the extension (only
+the extension ID listed in the host manifest may call it). Messages are JSON,
+each prefixed with its length as a 4-byte native-endian integer, both ways.
+
+  {"cmd": "ping"}                          is the engine up?
+  {"cmd": "add", "url", "cookies", "referer", "user_agent", "mime", "name", "verify"}
+  {"cmd": "job", "id"}                     one download's current state
+  {"cmd": "remove", "id"}                  drop a download dm couldn't take over
+  {"cmd": "show"}                          open the Downloads panel in the bar
+"""
+
+import json
+import os
+import shutil
+import struct
+import subprocess
+import sys
+
+DAEMON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "daemon")
+sys.path.insert(0, DAEMON_DIR)
+
+from client import Offline, request  # noqa: E402
+
+PLUGIN_ID = "io.github.puneethkethanapalli.dm"
+MAX_MESSAGE = 1 << 20
+
+
+def read_message():
+    raw = sys.stdin.buffer.read(4)
+    if len(raw) < 4:
+        return None
+    (size,) = struct.unpack("=I", raw)
+    if size > MAX_MESSAGE:
+        return None
+    return json.loads(sys.stdin.buffer.read(size) or b"null")
+
+
+def send_message(obj):
+    data = json.dumps(obj).encode()
+    sys.stdout.buffer.write(struct.pack("=I", len(data)) + data)
+    sys.stdout.buffer.flush()
+
+
+def handle(msg):
+    if not isinstance(msg, dict):
+        return {"ok": False, "error": "Bad message"}
+    cmd = msg.get("cmd")
+    if cmd == "ping":
+        reply = request({"cmd": "version"}, timeout=5)
+        return {"ok": bool(reply.get("ok")), "version": reply.get("version"), "aria2": reply.get("aria2")}
+    if cmd == "add":
+        headers = []
+        if msg.get("cookies"):
+            headers.append("Cookie: " + str(msg["cookies"]))
+        return request({
+            "cmd": "add",
+            "url": msg.get("url"),
+            "headers": headers,
+            "referer": msg.get("referer") or None,
+            "user_agent": msg.get("user_agent") or None,
+            "name": msg.get("name") or None,
+            "mime": msg.get("mime") or None,
+            "verify": bool(msg.get("verify")),
+            "source": "browser",
+        }, timeout=20)
+    if cmd == "job":
+        reply = request({"cmd": "status"}, timeout=5)
+        if not reply.get("ok"):
+            return reply
+        job = next((j for j in reply["state"]["jobs"] if j["id"] == msg.get("id")), None)
+        return {"ok": job is not None, "job": job, "error": None if job else "No such download"}
+    if cmd == "remove":
+        return request({"cmd": "remove", "id": str(msg.get("id") or "")}, timeout=5)
+    if cmd == "show":
+        path = os.pathsep.join([os.environ.get("PATH", ""), "/usr/share/omarchy/bin", "/usr/bin"])
+        shell = shutil.which("omarchy-shell", path=path)
+        if not shell:
+            return {"ok": False, "error": "omarchy-shell not found"}
+        subprocess.Popen([shell, "shell", "summon", PLUGIN_ID], stdin=subprocess.DEVNULL,
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        return {"ok": True}
+    return {"ok": False, "error": "Unknown command"}
+
+
+def log(text):
+    # Troubleshooting: DM_HOST_LOG=/path makes the host note what it was asked.
+    path = os.environ.get("DM_HOST_LOG")
+    if path:
+        with open(path, "a") as f:
+            f.write(text + "\n")
+
+
+def main():
+    log("started by %s" % " ".join(sys.argv[1:]))
+    while True:
+        try:
+            msg = read_message()
+        except ValueError:
+            send_message({"ok": False, "error": "Bad message"})
+            return
+        if msg is None:
+            return
+        log("cmd %s" % (msg.get("cmd") if isinstance(msg, dict) else "?"))
+        try:
+            send_message(handle(msg))
+        except Offline as e:
+            send_message({"ok": False, "offline": True, "error": str(e)})
+
+
+if __name__ == "__main__":
+    main()

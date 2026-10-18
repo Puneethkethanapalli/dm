@@ -1,5 +1,6 @@
 #!/bin/bash
-# Installs dm's engine: aria2, the dm user service, and the `dm` command.
+# Installs dm's engine: aria2, the dm user service, and the `dm` command,
+# plus the browser extension for Brave/Chromium (skip it with --no-browser).
 # Safe to run again (after an update, it restarts the engine on the new code).
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
@@ -19,7 +20,7 @@ cat >"$HOME/.local/bin/dm" <<EOF
 #!/bin/sh
 exec /usr/bin/python3 -B "$here/bin/dm" "\$@"
 EOF
-chmod +x "$HOME/.local/bin/dm" "$here/bin/dm" "$here/daemon/dmd.py"
+chmod +x "$HOME/.local/bin/dm" "$here/bin/dm" "$here/bin/dm-native-host" "$here/bin/dm-browser" "$here/daemon/dmd.py"
 
 cat >"$unit_dir/dm.service" <<EOF
 [Unit]
@@ -48,5 +49,6 @@ for _ in $(seq 1 50); do
   sleep 0.1
 done
 "$HOME/.local/bin/dm" status || { echo "The dm engine did not start; see: journalctl --user -u dm"; exit 1; }
+[[ ${1:-} == --no-browser ]] || /usr/bin/python3 -B "$here/bin/dm-browser" install
 [[ ":$PATH:" == *":$HOME/.local/bin:"* ]] || echo "Note: ~/.local/bin is not on your PATH, so the dm command won't be found until you add it."
 echo "dm is ready. Try: dm add <url>"

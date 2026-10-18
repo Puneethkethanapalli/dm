@@ -21,6 +21,7 @@ Then click the download icon in the bar and press **Set up**. That installs `ari
 
 ## Use
 
+- **Browser:** downloads you start in Brave or Chromium go to dm automatically (see below).
 - **Panel:** paste a link and press Enter, or press **Clipboard**.
 - **Bar icon:** left-click opens the panel; right-click downloads the link on the clipboard.
 - **Command line:**
@@ -43,6 +44,20 @@ Then click the download icon in the bar and press **Set up**. That installs `ari
   o.bind("SUPER + ALT + D", "Download clipboard link", "omarchy-shell downloads clipboard")
   o.bind("SUPER + SHIFT + D", "Downloads", "omarchy-shell shell toggle io.github.puneethkethanapalli.dm")
   ```
+
+## Browser downloads
+
+Setup also installs a small extension for Brave Origin, Brave and Chromium. Restart the browser once afterwards. When you start a download in the browser:
+
+1. The extension pauses the browser's copy and hands the link to dm, together with the site's cookies, the page you were on and the browser's identity, so downloads that need you logged in still work.
+2. dm checks the website will really give it the file.
+3. Only when dm is actually receiving data does the browser drop its copy; the download then shows up in the bar.
+
+If dm isn't running, the website refuses it, or it's a link only the browser can use (one-time links, `blob:` downloads), the browser just carries on as if nothing happened, and the extension's icon briefly shows ↩. Downloads from private windows are never sent to dm.
+
+The extension's toolbar button turns the automatic hand-over on or off and opens the Downloads panel. Right-click any link, image or video and choose **Download with dm** to send just that one.
+
+Setup adds the extension to the `--load-extension` line of `~/.config/brave-origin-flags.conf` (and `chromium-flags.conf`), the same way Omarchy loads its own extensions, and keeps a `.dm-backup` of the file. If an Omarchy update rewrites that line, run `./setup` again. `bin/dm-browser status` shows what's installed where.
 
 ## Settings
 
@@ -72,8 +87,8 @@ To hide the bar icon while nothing is downloading, run `omarchy bar set io.githu
 
 ## Limits
 
-- Downloads you start in the browser stay in the browser. A browser extension that hands them to dm is planned.
-- Links that only work inside a logged-in browser session need their cookie passed with `--header`. Those headers are also sent if the server redirects elsewhere, so only use them with links you trust.
+- A download that starts in the first second or two after the browser opens can arrive before the extension is ready; that one stays in the browser.
+- Cookies (from the browser, or passed with `--header`) are also sent if the server redirects the download to another site. The browser has usually followed the redirects already, so this rarely matters; still, only pass headers by hand for links you trust.
 
 ## Tests
 
@@ -89,6 +104,15 @@ python -I tests/run.py
 ```
 
 It needs `aria2c`, and `unshare` for the disk-full case. All files go to a temp directory and `$XDG_RUNTIME_DIR/dm-tests`.
+
+`tests/browser.py` runs the extension in a real browser with a throwaway profile. It checks that a members-only download is handed over with its login cookie, and that a one-time link dm can't fetch is finished by the browser instead:
+
+```bash
+python -I tests/browser.py                              # Chromium, headless
+python -I tests/browser.py --browser brave-origin --xvfb  # Brave, on a virtual screen
+```
+
+Set `DM_HOST_LOG=/some/file` to have the browser connector log the messages it handles.
 
 ## Uninstall
 

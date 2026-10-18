@@ -118,6 +118,15 @@ def check_headers(headers):
     return out
 
 
+def check_text(value, what, limit):
+    if value is None or value == "":
+        return None
+    value = str(value)
+    if any(c in value for c in "\r\n\0") or len(value) > limit:
+        raise Refused("%s is not valid" % what)
+    return value
+
+
 def guess_name(url):
     parts = urllib.parse.urlsplit(url)
     base = urllib.parse.unquote(parts.path.rstrip("/").rsplit("/", 1)[-1])
@@ -181,25 +190,28 @@ def place_file(staged, directory, record_target):
 _PROBE_OPENER = urllib.request.build_opener()
 
 
-def probe(url, headers, user_agent):
-    """Validators (ETag, Last-Modified, length) for a remote file, and whether
-    the server can resume it, or None.
+def inspect_remote(remote):
+    """Ask the server about a file with a one-byte ranged GET.
 
-    A one-byte ranged GET rather than HEAD: signed links often only allow GET.
-    A 206 answer means the server honours ranges; a 200 means it always sends
-    the whole file, so any interruption starts the download over.
+    remote is (url, headers, user_agent, referer). Returns status, content
+    type, validators (ETag, Last-Modified, length) and whether the server can
+    resume; status 0 with an error when it couldn't be reached. A ranged GET
+    rather than HEAD: signed links often only allow GET. A 206 answer means
+    the server honours ranges; a 200 means it always sends the whole file.
     """
+    url, headers, user_agent, referer = remote
     if urllib.parse.urlsplit(url).scheme.lower() not in ("http", "https"):
-        return None
+        return {"status": 0, "error": "not http"}
     req = urllib.request.Request(url, headers={"Range": "bytes=0-0", "User-Agent": user_agent})
+    if referer:
+        req.add_header("Referer", referer)
     for h in headers or []:
         k, _, v = h.partition(":")
         req.add_header(k.strip(), v.strip())
     try:
         with _PROBE_OPENER.open(req, timeout=10) as resp:
             length = None
-            crange = resp.headers.get("Content-Range", "")
-            m = re.search(r"/(\d+)$", crange)
+            m = re.search(r"/(\d+)$", resp.headers.get("Content-Range", ""))
             if m:
                 length = int(m.group(1))
             elif resp.status == 200 and resp.headers.get("Content-Length"):
@@ -207,6 +219,8 @@ def probe(url, headers, user_agent):
             etag = resp.headers.get("ETag") or None
             modified = resp.headers.get("Last-Modified") or None
             return {
+                "status": resp.status,
+                "content_type": (resp.headers.get("Content-Type") or "").split(";")[0].strip().lower(),
                 # Weak ETags and a Last-Modified equal to Date (generated per
                 # request) say nothing about the bytes.
                 "etag": None if etag and etag.startswith("W/") else etag,
@@ -214,8 +228,18 @@ def probe(url, headers, user_agent):
                 "length": length,
                 "resumable": resp.status == 206,
             }
-    except (urllib.error.URLError, OSError, ValueError):
+    except urllib.error.HTTPError as e:
+        return {"status": e.code, "error": "HTTP %d" % e.code}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        return {"status": 0, "error": str(getattr(e, "reason", e))}
+
+
+def probe(remote):
+    """Validators and resumability of a file the server serves, or None."""
+    found = inspect_remote(remote)
+    if found["status"] not in (200, 206):
         return None
+    return {k: found[k] for k in ("etag", "last_modified", "length", "resumable")}
 
 
 def validators_changed(old, new):
@@ -253,8 +277,10 @@ class Daemon:
 
     # ------------------------------------------------------------ helpers
 
-    def user_agent(self):
-        return "aria2/" + (self.engine.version or "1.37.0")
+    def remote(self, job):
+        """What a request for this job sends: (url, headers, user agent, referer)."""
+        ua = job.get("user_agent") or "aria2/" + (self.engine.version or "1.37.0")
+        return (job["url"], list(job.get("headers") or []), ua, job.get("referer"))
 
     def find(self, ref):
         ref = str(ref or "").strip().lower()
@@ -330,8 +356,8 @@ class Daemon:
             job = next((j for j in self.jobs if j["id"] == job_id), None)
             if not job:
                 return
-            url, headers, old = job["url"], job.get("headers"), job.get("validators")
-        fresh = probe(url, headers, self.user_agent())
+            remote, old = self.remote(job), job.get("validators")
+        fresh = probe(remote)
         with self.lock:
             if job not in self.jobs or job["status"] != "checking":
                 return
@@ -371,6 +397,10 @@ class Daemon:
             options["checksum"] = "sha-256=" + job["sha256"]
         if job.get("headers"):
             options["header"] = job["headers"]
+        if job.get("referer"):
+            options["referer"] = job["referer"]
+        if job.get("user_agent"):
+            options["user-agent"] = job["user_agent"]
         if job.get("resumable") is False:
             # Extra connections would each ask for a middle part and be refused.
             options["split"] = "1"
@@ -395,8 +425,8 @@ class Daemon:
             job = next((j for j in self.jobs if j["id"] == job_id), None)
             if not job:
                 return
-            url, headers = job["url"], job.get("headers")
-        found = probe(url, headers, self.user_agent())
+            remote = self.remote(job)
+        found = probe(remote)
         if found:
             with self.lock:
                 if job in self.jobs and not job.get("validators"):
@@ -504,8 +534,8 @@ class Daemon:
             job = next((j for j in self.jobs if j["id"] == job_id), None)
             if not job:
                 return
-            url, headers, old = job["url"], job.get("headers"), job.get("validators")
-        fresh = probe(url, headers, self.user_agent())
+            remote, old = self.remote(job), job.get("validators")
+        fresh = probe(remote)
         if fresh:
             fresh.pop("resumable")
         with self.lock:
@@ -627,6 +657,8 @@ class Daemon:
         name = check_name(req.get("name"))
         sha = check_sha256(req.get("sha256"))
         headers = check_headers(req.get("headers"))
+        referer = check_text(req.get("referer"), "Referer", 8192)
+        user_agent = check_text(req.get("user_agent"), "User agent", 1024)
         if not req.get("force"):
             for j in self.jobs:
                 if j["url"] == url and j["status"] in UNFINISHED:
@@ -638,6 +670,9 @@ class Daemon:
             "name": name,
             "sha256": sha,
             "headers": headers,
+            "referer": referer,
+            "user_agent": user_agent,
+            "source": check_text(req.get("source"), "Source", 32),
             "status": "queued",
             "created": now(),
             "updated": now(),
@@ -645,6 +680,10 @@ class Daemon:
             "total": 0,
             "attempts": 0,
         }
+        checked = req.get("_checked")
+        if checked:
+            job["resumable"] = checked["resumable"]
+            job["validators"] = {k: checked[k] for k in ("etag", "last_modified", "length")}
         self.jobs.append(job)
         self.jobs_dirty = True
         self.submit(job)
@@ -729,10 +768,37 @@ class Daemon:
         "cancel": cmd_cancel, "remove": cmd_remove, "status": cmd_status, "version": cmd_version,
     }
 
+    def verify(self, req):
+        """Check dm can really fetch a download before the browser drops its copy.
+
+        Runs outside the lock: the server may take seconds to answer.
+        """
+        try:
+            url = check_url(req.get("url"))
+            headers = check_headers(req.get("headers"))
+            ua = check_text(req.get("user_agent"), "User agent", 1024) or "aria2/" + (self.engine.version or "1.37.0")
+            referer = check_text(req.get("referer"), "Referer", 8192)
+        except Refused as e:
+            return str(e)
+        found = inspect_remote((url, headers, ua, referer))
+        if found["status"] not in (200, 206):
+            return "The website wouldn't give dm this file (%s)" % found.get("error", "HTTP %d" % found["status"])
+        expected = str(req.get("mime") or "").lower()
+        if found["content_type"] == "text/html" and not expected.startswith("text/html"):
+            # Typically a login or "are you human" page instead of the file.
+            return "The website answered with a web page instead of the file"
+        req["_checked"] = found
+        return None
+
     def handle(self, req):
         cmd = self.COMMANDS.get(req.get("cmd") if isinstance(req, dict) else None)
         if not cmd:
             return {"ok": False, "error": "Unknown command"}
+        req.pop("_checked", None)  # only verify() may set this
+        if req.get("cmd") == "add" and req.get("verify"):
+            problem = self.verify(req)
+            if problem:
+                return {"ok": False, "error": problem, "refused": True}
         with self.lock:
             try:
                 result = cmd(self, req)
@@ -769,6 +835,7 @@ class Daemon:
             "connections": job.get("_connections", 0) if job["status"] == "active" else 0,
             "error": job.get("error"),
             "note": job.get("note"),
+            "source": job.get("source"),
             # None until known; False: the server can't continue a download.
             "resumable": job.get("resumable"),
             "attempts": job.get("attempts", 0),

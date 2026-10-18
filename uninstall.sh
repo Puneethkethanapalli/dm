@@ -4,6 +4,9 @@
 set -euo pipefail
 unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
 
+here="$(cd "$(dirname "$0")" && pwd)"
+
+/usr/bin/python3 -B "$here/bin/dm-browser" uninstall || true
 systemctl --user disable --now dm.service >/dev/null 2>&1 || true
 rm -f "$unit_dir/dm.service" "$HOME/.local/bin/dm"
 systemctl --user daemon-reload

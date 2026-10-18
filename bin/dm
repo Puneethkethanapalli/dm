@@ -22,40 +22,13 @@ sys.dont_write_bytecode = True
 import argparse
 import json
 import os
-import socket
 import subprocess
 import time
 
 DAEMON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "daemon")
 sys.path.insert(0, DAEMON_DIR)
 
-import store  # noqa: E402
-
-
-class Offline(Exception):
-    pass
-
-
-def request(payload, timeout=15):
-    try:
-        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
-            s.settimeout(timeout)
-            s.connect(store.SOCKET_PATH)
-            s.sendall((json.dumps(payload) + "\n").encode())
-            data = b""
-            while not data.endswith(b"\n"):
-                chunk = s.recv(65536)
-                if not chunk:
-                    break
-                data += chunk
-    except (FileNotFoundError, ConnectionRefusedError):
-        raise Offline("The dm engine isn't running. Start it with: systemctl --user start dm")
-    except OSError as e:
-        raise Offline("Could not reach the dm engine: %s" % e)
-    try:
-        return json.loads(data)
-    except ValueError:
-        raise Offline("The dm engine sent an unreadable reply")
+from client import Offline, request  # noqa: E402
 
 
 def human_bytes(n):
@@ -136,7 +109,8 @@ def cmd_add(args):
     status, replies = 0, []
     for url in urls:
         reply = request({"cmd": "add", "url": url, "dir": args.dir, "name": args.name,
-                         "sha256": args.sha256, "headers": args.header, "force": args.force})
+                         "sha256": args.sha256, "headers": args.header, "force": args.force,
+                         "referer": args.referer, "user_agent": args.user_agent})
         replies.append(reply)
         if not reply.get("ok"):
             status = 1
@@ -222,6 +196,8 @@ def main():
     p.add_argument("--name", help="save under this file name")
     p.add_argument("--sha256", help="expected SHA-256; the download fails if it differs")
     p.add_argument("--header", action="append", default=[], help="extra request header, 'Name: value'")
+    p.add_argument("--referer", help="page the link came from (some sites require it)")
+    p.add_argument("--user-agent", help="identify as this browser")
     p.add_argument("--force", action="store_true", help="add even if the URL is already downloading")
     p.set_defaults(func=cmd_add)
 

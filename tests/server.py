@@ -14,6 +14,14 @@ without storing anything. Routes (size in bytes via ?size=, default 4 MiB):
   /redirect/N/NAME    N redirects, then /ok/NAME
   /disposition/NAME   name comes from a UTF-8 Content-Disposition (?as=)
   /status/CODE        always answers CODE
+  /once/NAME          the first request gets the file, every later one 410
+                      (like a one-time download link)
+  /page?target=PATH   sets Cookie session=ok, then sends the browser to PATH
+                      after ?delay= seconds (default 3), like a "your download
+                      will start shortly" page
+  /login/NAME         the file only with Cookie session=ok, else a 200
+                      HTML login page; every request's Cookie, Referer and
+                      User-Agent are recorded in `seen`
 
 A one-byte ranged GET (dm's validator probe) never counts as a download
 request, so it doesn't consume the one-shot failures above.
@@ -32,6 +40,7 @@ import urllib.parse
 lock = threading.Lock()
 requests_seen = {}
 versions = {}
+seen = []  # (path, cookie, referer, user agent) of /login requests
 
 
 def content(name, size, version=0):
@@ -63,6 +72,17 @@ class Handler(http.server.BaseHTTPRequestHandler):
         size = int(q.get("size", 4 << 20))
         if route == "status":
             return self.reply_status(int(parts[1]))
+        if route == "page":
+            target = q.get("target", "/ok/file.bin").replace('"', "%22")
+            body = ('<!doctype html><meta http-equiv="refresh" content="%d;url=%s">'
+                    '<p>Your download will start shortly.</p>' % (int(q.get("delay", 3)), target)).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Set-Cookie", "session=ok; Path=/")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            return
         if route == "redirect":
             n = int(parts[1])
             rest = "/".join(parts[2:])
@@ -75,7 +95,25 @@ class Handler(http.server.BaseHTTPRequestHandler):
             self.end_headers()
             return
         name = "/".join(parts[1:]) or "file.bin"
+        if route == "login":
+            with lock:
+                seen.append((self.path, self.headers.get("Cookie"), self.headers.get("Referer"),
+                             self.headers.get("User-Agent")))
+            if "session=ok" not in (self.headers.get("Cookie") or ""):
+                body = b"<html><body>Please log in</body></html>"
+                self.send_response(200)
+                self.send_header("Content-Type", "text/html; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+                return
         key = route + "/" + name + "?" + str(size)
+        if route == "once":
+            with lock:
+                used = requests_seen.get(key, 0)
+                requests_seen[key] = used + 1
+            if used:
+                return self.reply_status(410)
         first = False
         if not self.is_probe():
             with lock:
