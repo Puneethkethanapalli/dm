@@ -15,6 +15,9 @@
   label small { display: block; color: var(--dim); }
   button { background: transparent; color: var(--fg); border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px; font: inherit; cursor: pointer; }
   button:hover { border-color: var(--accent); }
+  button:disabled { opacity: 0.5; cursor: default; }
+  #note { color: var(--dim); }
+  #note.bad { color: var(--bad); }
 </style>
 </head>
 <body>
@@ -27,6 +30,8 @@
       <small>Anything dm can't fetch stays in the browser. Private windows are never sent.</small>
     </span>
   </label>
+  <button id="video">Download this page's video</button>
+  <div id="note" hidden></div>
   <button id="show">Show downloads</button>
 </main>
 <script src="popup.js"></script>

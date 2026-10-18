@@ -17,6 +17,29 @@ chrome.storage.local.get("takeover").then(({ takeover: on = true }) => {
 });
 takeover.addEventListener("change", () => chrome.storage.local.set({ takeover: takeover.checked }));
 
+const videoButton = document.getElementById("video");
+const note = document.getElementById("note");
+
+function say(text, bad) {
+  note.textContent = text;
+  note.classList.toggle("bad", !!bad);
+  note.hidden = false;
+}
+
+chrome.tabs.query({ active: true, currentWindow: true }).then(([tab]) => {
+  const url = tab && tab.url;
+  if (!url || !/^https?:\/\//i.test(url)) {
+    videoButton.disabled = true;
+    return;
+  }
+  videoButton.addEventListener("click", async () => {
+    videoButton.disabled = true;
+    const reply = await chrome.runtime.sendMessage({ cmd: "video", url });
+    if (reply && reply.ok) say(reply.existing ? "Already downloading this video." : "Sent to dm. Watch it in the bar.");
+    else say((reply && reply.error) || "dm couldn't take this video.", true);
+  });
+});
+
 document.getElementById("show").addEventListener("click", async () => {
   await native({ cmd: "show" });
   window.close();

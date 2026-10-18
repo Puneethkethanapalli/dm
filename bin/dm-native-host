@@ -8,6 +8,7 @@ each prefixed with its length as a 4-byte native-endian integer, both ways.
   {"cmd": "ping"}                          is the engine up?
   {"cmd": "add", "url", "cookies", "referer", "user_agent", "mime", "name", "verify"}
   {"cmd": "job", "id"}                     one download's current state
+  {"cmd": "cancel", "id"}                  stop a download the browser finished first
   {"cmd": "remove", "id"}                  drop a download dm couldn't take over
   {"cmd": "show"}                          open the Downloads panel in the bar
 """
@@ -64,6 +65,8 @@ def handle(msg):
             "name": msg.get("name") or None,
             "mime": msg.get("mime") or None,
             "verify": bool(msg.get("verify")),
+            # True: a video page for yt-dlp; absent: let dm recognise it.
+            "media": True if msg.get("media") else None,
             "source": "browser",
         }, timeout=20)
     if cmd == "job":
@@ -72,8 +75,8 @@ def handle(msg):
             return reply
         job = next((j for j in reply["state"]["jobs"] if j["id"] == msg.get("id")), None)
         return {"ok": job is not None, "job": job, "error": None if job else "No such download"}
-    if cmd == "remove":
-        return request({"cmd": "remove", "id": str(msg.get("id") or "")}, timeout=5)
+    if cmd in ("cancel", "remove"):
+        return request({"cmd": cmd, "id": str(msg.get("id") or "")}, timeout=5)
     if cmd == "show":
         path = os.pathsep.join([os.environ.get("PATH", ""), "/usr/share/omarchy/bin", "/usr/bin"])
         shell = shutil.which("omarchy-shell", path=path)

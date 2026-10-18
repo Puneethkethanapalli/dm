@@ -58,6 +58,8 @@ Item {
   readonly property real speed: live ? Number(snapshot.speed || 0) : 0
   readonly property real progress: live ? Number(snapshot.progress) : -1
   readonly property string downloadDir: live ? String(snapshot.download_dir || "") : ""
+  // aria2 syntax: "0" (no limit), "500K", "2M"...
+  readonly property string speedLimit: live ? String(snapshot.speed_limit || "0") : "0"
   // After `omarchy plugin update` the old engine keeps running until restarted.
   readonly property bool outdated: live && manifest && manifest.version
     && String(snapshot.version) !== String(manifest.version)
@@ -117,6 +119,7 @@ Item {
   function retry(id) { act("retry", id) }
   function remove(id) { act("remove", id) }
   function clearFinished() { act("remove", "finished") }
+  function setLimit(value) { dm(["limit", value], root.report) }
 
   // Detached, so the file manager or viewer outlives a shell reload.
   function openPath(path) { if (path) Util.execArgv(["xdg-open", path]) }

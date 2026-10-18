@@ -97,8 +97,35 @@ function heroLine(service) {
   if (service.waiting > 0) parts.push(service.waiting + " waiting")
   if (service.pausedCount > 0) parts.push(service.pausedCount + " paused")
   if (service.speed > 0) parts.push(speed(service.speed))
+  if (service.speedLimit && service.speedLimit !== "0") parts.push("limit " + limitLabel(service.speedLimit))
   if (!service.online) parts.push("offline")
   return parts.length > 0 ? parts.join(" · ") : "Nothing downloading"
+}
+
+// "2M" -> "2 MB/s"
+function limitLabel(value) {
+  var m = String(value).match(/^(\d+(?:\.\d+)?)([KkMm]?)$/)
+  if (!m) return value
+  return m[1] + " " + (m[2] ? m[2].toUpperCase() + "B" : "B") + "/s"
+}
+
+// The speed-limit choices, plus the current one if it was set elsewhere.
+function limitOptions(current) {
+  var options = [
+    { value: "0", label: "Off" },
+    { value: "1M", label: "1 MB/s" },
+    { value: "5M", label: "5 MB/s" },
+    { value: "20M", label: "20 MB/s" }
+  ]
+  var known = options.some(function(o) { return o.value === current })
+  if (!known && current) options.push({ value: current, label: limitLabel(current) })
+  return options
+}
+
+// Video pages get a film glyph in front of their title.
+function displayName(job) {
+  var name = job.name || job.url || ""
+  return job.kind === "media" ? "󰕧  " + name : name
 }
 
 function tooltip(service) {

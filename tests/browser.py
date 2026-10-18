@@ -68,6 +68,7 @@ def browser_profile(work, config_home, name):
 
 
 XVFB = None  # the virtual X server, when --xvfb
+STARTED = []  # every browser launched, so each one is stopped even when a test fails
 
 
 def start_xvfb():
@@ -86,13 +87,16 @@ def open_page(browser, profile, env, url):
              "--disable-features=DisableLoadExtensionCommandLineSwitch", "--no-first-run",
              "--no-default-browser-check", "--disable-gpu", "--password-store=basic"]
     if not XVFB:
-        return subprocess.Popen([browser, "--headless=new"] + flags + [url], env=env,
+        proc = subprocess.Popen([browser, "--headless=new"] + flags + [url], env=env,
                                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, start_new_session=True)
+        STARTED.append(proc)
+        return proc
     env = dict(env, DISPLAY=XVFB.display)
     env.pop("WAYLAND_DISPLAY", None)
     flags.append("--ozone-platform=x11")
     proc = subprocess.Popen([browser] + flags, env=env, stdout=subprocess.DEVNULL,
                             stderr=subprocess.DEVNULL, start_new_session=True)
+    STARTED.append(proc)
     time.sleep(5)  # past the welcome page, extension loaded
     # A second launch hands the URL to the running browser and exits.
     subprocess.run([browser] + flags + [url], env=env, stdout=subprocess.DEVNULL,
@@ -133,17 +137,18 @@ def main():
         for name, test in (("hand-off", t_handoff), ("fallback", t_fallback)):
             profile, downloads = browser_profile(work, inst.env["XDG_CONFIG_HOME"], name)
             started = time.time()
-            proc = None
             try:
-                proc = test(inst, base, browser, profile, downloads)
+                test(inst, base, browser, profile, downloads)
                 print("  ok    %-10s %5.1fs" % (name, time.time() - started))
             except Failure as e:
                 failed += 1
                 print("  FAIL  %-10s %s" % (name, e))
             finally:
-                if proc and proc.poll() is None:
-                    os.killpg(proc.pid, 15)
-                    proc.wait(10)
+                while STARTED:
+                    proc = STARTED.pop()
+                    if proc.poll() is None:
+                        os.killpg(proc.pid, 15)
+                        proc.wait(10)
     finally:
         inst.stop()
         if XVFB:

@@ -8,6 +8,7 @@
 //
 // The file name is versioned because Omarchy loads extensions with
 // --load-extension: a new script URL forces the browser to pick up new code.
+// Bump it (and the manifest version) whenever this file changes.
 
 const HOST = "io.github.puneethkethanapalli.dm";
 const WAIT_MS = 15000;
@@ -83,6 +84,12 @@ async function flag(text, title) {
   }, 8000);
 }
 
+// Did the browser's own copy complete (all bytes in, file in place)?
+async function finishedInBrowser(id) {
+  const [now] = await chrome.downloads.search({ id });
+  return !!now && now.state === "complete";
+}
+
 // ------------------------------------------------------- automatic takeover
 
 const handling = new Set();
@@ -102,6 +109,7 @@ chrome.downloads.onCreated.addListener(async (item) => {
     } catch (e) {
       return; // already finished: tiny files beat us to it
     }
+    if (await finishedInBrowser(item.id)) return; // all bytes arrived before the pause
     const reply = await native({
       cmd: "add",
       ...(await details(url, item.referrer)),
@@ -111,6 +119,19 @@ chrome.downloads.onCreated.addListener(async (item) => {
     });
     if (reply.ok && (reply.existing || (await startedInDm(reply.job.id)))) {
       await chrome.downloads.cancel(item.id);
+      if (await finishedInBrowser(item.id)) {
+        // The browser completed its copy before the cancel landed: keep one.
+        const job = (await native({ cmd: "job", id: reply.job.id })).job;
+        if (job && job.status === "done") {
+          await chrome.downloads.removeFile(item.id).catch(() => {});
+        } else {
+          if (!reply.existing) {
+            await native({ cmd: "cancel", id: reply.job.id });
+            await native({ cmd: "remove", id: reply.job.id });
+          }
+          return;
+        }
+      }
       await chrome.downloads.erase({ id: item.id });
       return;
     }
@@ -128,21 +149,49 @@ chrome.downloads.onCreated.addListener(async (item) => {
 
 // ---------------------------------------------------------- right-click menu
 
-chrome.runtime.onInstalled.addListener(() => {
-  chrome.contextMenus.create({
-    id: "dm-download",
-    title: "Download with dm",
-    contexts: ["link", "image", "video", "audio"],
+function registerMenus() {
+  chrome.contextMenus.removeAll(() => {
+    chrome.contextMenus.create({
+      id: "dm-download",
+      title: "Download with dm",
+      contexts: ["link", "image", "video", "audio"],
+    });
+    // Video sites (YouTube and the rest yt-dlp knows): the page, not its stream.
+    chrome.contextMenus.create({
+      id: "dm-video",
+      title: "Download video with dm",
+      contexts: ["page", "video", "link"],
+    });
   });
-});
+}
 
-chrome.contextMenus.onClicked.addListener(async (info) => {
-  if (info.menuItemId !== "dm-download") return;
-  const url = info.linkUrl || info.srcUrl;
+chrome.runtime.onInstalled.addListener(registerMenus);
+chrome.runtime.onStartup.addListener(registerMenus);
+
+// Send one URL to dm; media: true makes it a yt-dlp video download.
+async function sendToDm(url, referrer, isMedia) {
   if (!url || !/^https?:\/\//i.test(url)) {
     await flag("!", "only web links can be sent to dm");
     return;
   }
-  const reply = await native({ cmd: "add", ...(await details(url, info.pageUrl)) });
+  const message = isMedia ? { cmd: "add", url, media: true } : { cmd: "add", ...(await details(url, referrer)) };
+  const reply = await native(message);
   if (!reply.ok) await flag("!", reply.error || "dm isn't running");
+}
+
+chrome.contextMenus.onClicked.addListener(async (info) => {
+  if (info.menuItemId === "dm-download") {
+    await sendToDm(info.linkUrl || info.srcUrl, info.pageUrl, false);
+  } else if (info.menuItemId === "dm-video") {
+    // A <video> element's source is usually a blob or one stream segment: use the page.
+    await sendToDm(info.linkUrl || info.pageUrl, info.pageUrl, true);
+  }
+});
+
+// The popup's "Download this page's video" button.
+chrome.runtime.onMessage.addListener((message, sender, respond) => {
+  if (message && message.cmd === "video") {
+    native({ cmd: "add", url: message.url, media: true }).then(respond);
+    return true;
+  }
 });

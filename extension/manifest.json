@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "dm Downloads",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "description": "Sends your browser downloads to dm, the download manager in the Omarchy bar. Anything dm can't fetch stays in the browser.",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtyFiwYwUd0C4XqMPk/FeuAiulOb1FjxtA6vaFNNIFGShz9vdgm51mrQ3SD8gi7VY2ETytpz0ZTJ79NASGvm8yMPNSpUG9vsEJwKRMUlpTn7+4lL5Zso1XaDepnsugQJ4N6vP0MnCgr5ghMJ1espQEODkHbgfawSR/1+gkvFxHJjN8PThKTsA9Bq0XSqEue1BP+IS28HKrtgIwUWs5ZBKm4tSzEf+0g+ro4pa0EnTZCmpQsWC/fOwHRI+VVlz+enWeiUmf39m9rxyJQuMOFd/76KehL5eBr2jXL4t09YXWCSDvKENS0RbpuG5dvYWd0jrE52NlBO11gkDi1y2R7mDgwIDAQAB",
   "permissions": [
@@ -15,7 +15,7 @@
     "<all_urls>"
   ],
   "background": {
-    "service_worker": "background-1.js"
+    "service_worker": "background-3.js"
   },
   "action": {
     "default_title": "dm Downloads",

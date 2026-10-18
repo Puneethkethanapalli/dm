@@ -34,6 +34,7 @@ import urllib.parse
 import urllib.request
 
 import aria2
+import media
 import store
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -261,6 +262,7 @@ class Daemon:
         self.config = store.load_config()
         self.jobs = store.load_jobs()
         self.engine = aria2.Aria2(self.config)
+        self.media = media.Runner(self)
         self.engine_error = ""
         self.next_engine_try = 0
         self.online = True
@@ -274,8 +276,16 @@ class Daemon:
         for job in self.jobs:
             if job["status"] == "checking":
                 job["status"] = "queued"
+            elif job.get("kind") == "media" and job["status"] == "active":
+                job["status"] = "queued"  # its yt-dlp stopped with the old daemon
 
     # ------------------------------------------------------------ helpers
+
+    def by_id(self, job_id):
+        return next((j for j in self.jobs if j["id"] == job_id), None)
+
+    def staging_dir(self, job):
+        return staging_dir(job)
 
     def remote(self, job):
         """What a request for this job sends: (url, headers, user agent, referer)."""
@@ -333,6 +343,8 @@ class Daemon:
         if was_running:
             store.log("aria2c restarted; resubmitting unfinished downloads")
         for job in self.jobs:
+            if job.get("kind") == "media":
+                continue  # yt-dlp's, not aria2's
             if job["status"] in IN_ENGINE:
                 self.start_transfer(job)
             elif job["status"] == "finishing":
@@ -340,7 +352,9 @@ class Daemon:
 
     def start_transfer(self, job):
         """(Re)start a transfer, first checking a partial file is still valid."""
-        if job.get("resumable") is False and job.get("completed", 0) > 0:
+        if job.get("kind") == "media":
+            self.submit(job)
+        elif job.get("resumable") is False and job.get("completed", 0) > 0:
             # The server can't continue from the middle; start clean.
             remove_staging(job)
             job["completed"] = 0
@@ -383,6 +397,12 @@ class Daemon:
         self.submit(job)
 
     def submit(self, job):
+        if job.get("kind") == "media":
+            # The media runner starts it when a slot is free.
+            self.set_status(job, "queued")
+            job.pop("next_retry", None)
+            job.pop("waiting_network", None)
+            return
         if not self.engine.alive():
             self.set_status(job, "queued")  # picked up when aria2 is back
             return
@@ -417,7 +437,7 @@ class Daemon:
         self.set_status(job, "queued")
         job.pop("next_retry", None)
         job.pop("waiting_network", None)
-        if not job.get("validators"):
+        if not job.get("validators") and job.get("kind") != "media":
             threading.Thread(target=self._record_validators, args=(job["id"],), daemon=True).start()
 
     def _record_validators(self, job_id):
@@ -436,6 +456,8 @@ class Daemon:
 
     def take_out(self, job):
         """Remove a job from aria2, keeping its partial file and control file."""
+        if job.get("kind") == "media":
+            return self.media.stop(job)
         if not self.engine.alive():
             return
         for method in ("forceRemove", "removeDownloadResult"):
@@ -463,7 +485,7 @@ class Daemon:
         """Pull transfer state from aria2 into the job list."""
         if not self.engine.alive():
             return
-        tracked = [j for j in self.jobs if j["status"] in IN_ENGINE]
+        tracked = [j for j in self.jobs if j["status"] in IN_ENGINE and j.get("kind") != "media"]
         if not tracked:
             return
         try:
@@ -603,8 +625,11 @@ class Daemon:
             job["completed"] = 0
             job["note"] = "The server can't resume, so it restarted from the beginning"
             return self.submit(job)
+        self.retry_or_fail(job, code, text, detail, code in aria2.TRANSIENT and not client_error)
+
+    def retry_or_fail(self, job, code, text, detail, transient):
         job["error"] = {"code": code, "text": text, "detail": detail}
-        if code in aria2.TRANSIENT and not client_error and job.get("attempts", 0) < int(self.config["max_retries"]):
+        if transient and job.get("attempts", 0) < int(self.config["max_retries"]):
             self.set_status(job, "retrying")
             if self.online:
                 job["attempts"] = job.get("attempts", 0) + 1
@@ -612,6 +637,12 @@ class Daemon:
             self.touch(job)
             return
         self.fail(job, code, text, detail)
+
+    def media_failed(self, job, message):
+        transient = bool(media.TRANSIENT.search(message))
+        # 6 (network) is retried like aria2's; 100 marks a yt-dlp failure.
+        self.retry_or_fail(job, 6 if transient else 100,
+                           "Network problem" if transient else "Couldn't download the video", message, transient)
 
     def fail(self, job, code, text, detail=""):
         # Keep a partial file only when a manual retry could resume it.
@@ -653,7 +684,10 @@ class Daemon:
 
     def cmd_add(self, req):
         url = check_url(req.get("url"))
-        directory = check_dir(req.get("dir"), self.config["download_dir"])
+        kind = "media" if req.get("media") else "file"
+        if kind == "media" and not media.available():
+            raise Refused("Video pages need yt-dlp, which isn't installed")
+        directory = check_dir(req.get("dir"), self.config["video_dir" if kind == "media" else "download_dir"])
         name = check_name(req.get("name"))
         sha = check_sha256(req.get("sha256"))
         headers = check_headers(req.get("headers"))
@@ -673,6 +707,7 @@ class Daemon:
             "referer": referer,
             "user_agent": user_agent,
             "source": check_text(req.get("source"), "Source", 32),
+            "kind": kind,
             "status": "queued",
             "created": now(),
             "updated": now(),
@@ -757,6 +792,24 @@ class Daemon:
         self.jobs_dirty = True
         return {"changed": sorted(ids)}
 
+    def cmd_limit(self, req):
+        value = str(req.get("value") or "0").strip()
+        if value.lower() in ("off", "none", "unlimited"):
+            value = "0"
+        if not re.fullmatch(r"\d+(\.\d+)?[KkMm]?", value):
+            raise Refused("Speed limits look like 500K, 2M or 0 (no limit)")
+        self.config["speed_limit"] = value
+        if self.engine.alive():
+            try:
+                self.engine.call("changeGlobalOption", {"max-overall-download-limit": value})
+            except aria2.RPCError as e:
+                raise Refused("aria2 refused the limit: %s" % e)
+        try:
+            store.save_config_value("speed_limit", value)
+        except OSError as e:
+            store.log("could not save the speed limit: %s" % e)
+        return {"speed_limit": value}
+
     def cmd_status(self, req):
         return {"state": self.snapshot()}
 
@@ -766,6 +819,7 @@ class Daemon:
     COMMANDS = {
         "add": cmd_add, "pause": cmd_pause, "resume": cmd_resume, "retry": cmd_retry,
         "cancel": cmd_cancel, "remove": cmd_remove, "status": cmd_status, "version": cmd_version,
+        "limit": cmd_limit,
     }
 
     def verify(self, req):
@@ -795,6 +849,8 @@ class Daemon:
         if not cmd:
             return {"ok": False, "error": "Unknown command"}
         req.pop("_checked", None)  # only verify() may set this
+        if req.get("cmd") == "add" and req.get("media") is None and not req.get("verify"):
+            req["media"] = media.detect(str(req.get("url") or "")) is not None
         if req.get("cmd") == "add" and req.get("verify"):
             problem = self.verify(req)
             if problem:
@@ -815,6 +871,8 @@ class Daemon:
     def display_name(self, job):
         if job.get("file"):
             return os.path.basename(job["file"])
+        if job.get("kind") == "media":
+            return job.get("title") or "Video from %s" % (urllib.parse.urlsplit(job["url"]).hostname or "the web")
         return job.get("name") or job.get("_staged_name") or guess_name(job["url"])
 
     def public(self, job):
@@ -836,6 +894,7 @@ class Daemon:
             "error": job.get("error"),
             "note": job.get("note"),
             "source": job.get("source"),
+            "kind": job.get("kind", "file"),
             # None until known; False: the server can't continue a download.
             "resumable": job.get("resumable"),
             "attempts": job.get("attempts", 0),
@@ -868,6 +927,9 @@ class Daemon:
             "engine": {"ok": self.engine.alive(), "error": self.engine_error, "version": self.engine.version},
             "online": self.online,
             "download_dir": self.config["download_dir"],
+            "video_dir": self.config["video_dir"],
+            "speed_limit": str(self.config.get("speed_limit") or "0"),
+            "media_available": media.available(),
             "counts": counts,
             "speed": speed,
             "total": total,
@@ -975,6 +1037,7 @@ class Daemon:
                 self.ensure_engine()
                 self.sync()
                 self.schedule()
+                self.media.pump()
                 self.prune()
                 self.update_inhibitor()
                 self.persist()
@@ -988,6 +1051,7 @@ class Daemon:
     def shutdown(self):
         with self.lock:
             # Unfinished jobs keep their status, so the next start resumes them.
+            self.media.stop_all()
             self.persist(force=True)
             self.engine.stop()
             if self.inhibitor is not None:

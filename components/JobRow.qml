@@ -34,7 +34,7 @@ Item {
         id: name
         width: parent.width - actions.width - parent.spacing
         anchors.verticalCenter: parent.verticalCenter
-        text: row.job.name || row.job.url || ""
+        text: Model.displayName(row.job)
         textFormat: Text.PlainText
         elide: Text.ElideMiddle
         color: row.status === "cancelled" ? row.dim : row.foreground

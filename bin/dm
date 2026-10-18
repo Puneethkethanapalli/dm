@@ -3,6 +3,9 @@
 
   dm add URL... [--dir D] [--name N] [--sha256 H] [--header 'K: V']... [--force]
   dm add --clipboard          add every link on the clipboard
+  dm add --media URL          a video page (YouTube etc.), saved with yt-dlp;
+                              video pages are recognised on their own
+  dm limit 2M|500K|off        cap the overall download speed
   dm ls                       list downloads
   dm pause|resume|cancel|retry ID|all
   dm remove ID|finished       drop from the list (files stay)
@@ -110,7 +113,7 @@ def cmd_add(args):
     for url in urls:
         reply = request({"cmd": "add", "url": url, "dir": args.dir, "name": args.name,
                          "sha256": args.sha256, "headers": args.header, "force": args.force,
-                         "referer": args.referer, "user_agent": args.user_agent})
+                         "referer": args.referer, "user_agent": args.user_agent, "media": args.media})
         replies.append(reply)
         if not reply.get("ok"):
             status = 1
@@ -149,7 +152,17 @@ def cmd_status(args):
     print("jobs:     %s" % (", ".join("%d %s" % (v, k) for k, v in counts.items()) or "none"))
     if st.get("speed"):
         print("speed:    %s/s" % human_bytes(st["speed"]))
+    if st.get("speed_limit", "0") != "0":
+        print("limit:    %sB/s" % st["speed_limit"])
     return 0
+
+
+def cmd_limit(args):
+    reply = request({"cmd": "limit", "value": args.value})
+    if reply.get("ok") and not args.json:
+        v = reply["speed_limit"]
+        print("Speed limit: %s" % ("off" if v == "0" else v + "B/s"))
+    return show(reply, args.json)
 
 
 def cmd_simple(args):
@@ -199,8 +212,16 @@ def main():
     p.add_argument("--referer", help="page the link came from (some sites require it)")
     p.add_argument("--user-agent", help="identify as this browser")
     p.add_argument("--force", action="store_true", help="add even if the URL is already downloading")
+    kind = p.add_mutually_exclusive_group()
+    kind.add_argument("--media", dest="media", action="store_const", const=True,
+                      help="a video/audio page: download the video with yt-dlp")
+    kind.add_argument("--file", dest="media", action="store_const", const=False,
+                      help="download the URL itself, even if it's a video page")
     p.set_defaults(func=cmd_add)
 
+    p = sub.add_parser("limit", help="cap the overall download speed: 2M, 500K or off")
+    p.add_argument("value")
+    p.set_defaults(func=cmd_limit)
     sub.add_parser("ls", help="list downloads").set_defaults(func=cmd_ls)
     sub.add_parser("status", help="engine status and totals").set_defaults(func=cmd_status)
     for name in ("pause", "resume", "cancel", "retry", "remove"):

@@ -66,7 +66,9 @@ class Instance:
         self.run_dir = os.path.join(os.environ.get("XDG_RUNTIME_DIR") or tempfile.gettempdir(), "dm-tests", name)
         shutil.rmtree(self.run_dir, ignore_errors=True)
         os.makedirs(self.run_dir, mode=0o700)
-        cfg = {"download_dir": self.downloads, "notify": False, "max_retries": 2, "max_concurrent": 3}
+        self.videos = os.path.join(self.root, "videos")
+        cfg = {"download_dir": self.downloads, "video_dir": self.videos, "notify": False, "max_retries": 2,
+               "max_concurrent": 3}
         cfg.update(config or {})
         with open(os.path.join(self.root, "config/dm/config.json"), "w") as f:
             json.dump(cfg, f)
@@ -439,6 +441,62 @@ def t_native_host(inst):
     check(offline.get("ok") is False and offline.get("offline"), "offline engine not reported: %s" % offline)
 
 
+def t_media(inst):
+    # A video "page" fetched by yt-dlp, landing in the videos folder.
+    jid = inst.add("/video/holiday-clip.mp4?size=%d" % SIZE, "--media")
+    job = inst.finish(jid, 60)
+    check(job["status"] == "done", "video failed: %s" % job.get("error"))
+    check(job["kind"] == "media", "not handled as a video")
+    check(os.path.dirname(job["file"]) == inst.videos, "saved to %s, not the videos folder" % job["file"])
+    check(sha_file(job["file"]) == server.expected_sha("holiday-clip.mp4", SIZE), "video bytes differ")
+    check(os.listdir(inst.videos) == [os.path.basename(job["file"])], "leftovers: %s" % os.listdir(inst.videos))
+
+
+def t_media_pause(inst):
+    jid = inst.add("/video/talk.mp4?size=%d&rate=%d" % (2 << 20, 512 << 10), "--media")
+    inst.wait(lambda: inst.job(jid)["completed"] > (300 << 10), 30, "video never made progress")
+    check(inst.dm("pause", jid)["ok"], "pause refused")
+    check(inst.job(jid)["status"] == "paused", "video not paused")
+    time.sleep(1)
+    check(inst.dm("resume", jid)["ok"], "resume refused")
+    job = inst.finish(jid, 60)
+    check(job["status"] == "done", "video failed after resume: %s" % job.get("error"))
+    check(sha_file(job["file"]) == server.expected_sha("talk.mp4", 2 << 20), "resumed video is damaged")
+
+
+def t_media_fail(inst):
+    jid = inst.add("/status/404", "--media")
+    job = inst.finish(jid, 60)
+    check(job["status"] == "failed" and job["attempts"] == 0, "expected a failure without retries: %s" % job)
+    check("video" in job["error"]["text"].lower(), "unclear error: %s" % job["error"])
+    check(os.listdir(inst.videos) == [], "leftovers: %s" % os.listdir(inst.videos))
+
+
+def t_media_detect(inst):
+    # Recognising video pages is offline: only yt-dlp's URL patterns are used.
+    code = "import sys; sys.path.insert(0, %r); import media; print(media.detect(sys.argv[1]))" % os.path.join(ROOT, "daemon")
+    for url, want in (("https://www.youtube.com/watch?v=dQw4w9WgXcQ", "Youtube"), ("https://youtu.be/dQw4w9WgXcQ", "Youtube"),
+                      ("https://example.com/file.zip", "None"), ("https://www.youtube.com/about", "None")):
+        got = subprocess.run([sys.executable, "-B", "-c", code, url], capture_output=True, text=True).stdout.strip()
+        check(got == want, "%s detected as %s, expected %s" % (url, got, want))
+    # A plain file link is still a plain download.
+    jid = inst.add("/ok/plain.iso?size=%d" % SIZE)
+    check(inst.job(jid)["kind"] == "file", "a file link was treated as a video")
+
+
+def t_speed_limit(inst):
+    check(inst.dm("limit", "fast")["ok"] is False, "nonsense limit accepted")
+    reply = inst.dm("limit", "1M")
+    check(reply.get("ok") and reply["speed_limit"] == "1M", "limit refused: %s" % reply)
+    check(inst.state()["speed_limit"] == "1M", "limit not in the snapshot")
+    saved = json.load(open(os.path.join(inst.root, "config/dm/config.json")))
+    check(saved.get("speed_limit") == "1M" and saved.get("notify") is False, "limit not saved, or other settings lost")
+    started = time.time()
+    expect_done(inst, inst.add("/ok/limited.bin?size=%d" % (4 << 20)), "limited.bin", 4 << 20)
+    check(time.time() - started > 2.5, "4 MB at 1 MB/s took only %.1fs" % (time.time() - started))
+    check(inst.dm("limit", "off")["speed_limit"] == "0", "limit not removed")
+
+
 def t_security(inst):
     run = os.path.join(inst.run_dir, "dm")
     for name in ("ctl.sock", "aria2.conf"):
@@ -500,6 +558,8 @@ TESTS = [
     ("not-found", t_not_found), ("forbidden", t_forbidden), ("server-error-retries", t_server_error_retries),
     ("checksum", t_checksum), ("same-name-twice", t_same_name_twice), ("pause-resume", t_pause_resume),
     ("cancel", t_cancel), ("kill-daemon", t_kill_daemon), ("kill-aria2", t_kill_aria2), ("network-outage", t_network_outage),
+    ("media", t_media), ("media-pause", t_media_pause), ("media-fail", t_media_fail),
+    ("media-detect", t_media_detect), ("speed-limit", t_speed_limit),
     ("browser-handoff", t_browser_handoff), ("verify-refuses", t_verify_refuses), ("native-host", t_native_host),
     ("security", t_security), ("config-injection", t_config_injection),
 ]

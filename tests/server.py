@@ -13,6 +13,8 @@ without storing anything. Routes (size in bytes via ?size=, default 4 MiB):
   /slow/NAME          ~rate bytes/s (?rate=, default 256 KiB/s)
   /redirect/N/NAME    N redirects, then /ok/NAME
   /disposition/NAME   name comes from a UTF-8 Content-Disposition (?as=)
+  /video/NAME         like /ok but served as video/mp4 (a direct video link
+                      yt-dlp can fetch without the internet)
   /status/CODE        always answers CODE
   /once/NAME          the first request gets the file, every later one 410
                       (like a one-time download link)
@@ -129,7 +131,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             if route == "changing":
                 with lock:
                     versions[key] = 1  # every later request sees the new file
-        self.send_file(data, "%s-v%d" % (name, version), ranges, drop, rate, disposition, dropped)
+        self.send_file(data, "%s-v%d" % (name, version), ranges, drop, rate, disposition, dropped,
+                       "video/mp4" if route == "video" else "application/octet-stream")
 
     def reply_status(self, code):
         body = b"status %d\n" % code
@@ -138,7 +141,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_file(self, data, tag, ranges, drop, rate, disposition, dropped=None):
+    def send_file(self, data, tag, ranges, drop, rate, disposition, dropped=None, mime="application/octet-stream"):
         start, end = 0, len(data) - 1
         header = self.headers.get("Range", "")
         partial = False
@@ -163,7 +166,7 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if partial:
             self.send_header("Content-Range", "bytes %d-%d/%d" % (start, end, len(data)))
         self.send_header("Content-Length", str(len(body)))
-        self.send_header("Content-Type", "application/octet-stream")
+        self.send_header("Content-Type", mime)
         self.send_header("ETag", '"%s"' % hashlib.md5(tag.encode()).hexdigest())
         self.send_header("Last-Modified", "Mon, 01 Jun 2026 12:00:00 GMT")
         if disposition:

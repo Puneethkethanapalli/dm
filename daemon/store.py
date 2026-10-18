@@ -29,19 +29,24 @@ SOCKET_PATH = os.path.join(RUNTIME_DIR, "ctl.sock")
 ARIA2_CONF_PATH = os.path.join(RUNTIME_DIR, "aria2.conf")
 
 
-def default_download_dir():
+def xdg_user_dir(name, fallback):
     try:
-        out = subprocess.run(["xdg-user-dir", "DOWNLOAD"], capture_output=True, text=True, timeout=3)
+        out = subprocess.run(["xdg-user-dir", name], capture_output=True, text=True, timeout=3)
         path = out.stdout.strip()
         if out.returncode == 0 and os.path.isabs(path) and path != os.path.expanduser("~"):
             return path
     except (OSError, subprocess.SubprocessError):
         pass
-    return os.path.expanduser("~/Downloads")
+    return os.path.expanduser(fallback)
+
+
+def default_download_dir():
+    return xdg_user_dir("DOWNLOAD", "~/Downloads")
 
 
 DEFAULT_CONFIG = {
     "download_dir": None,          # None: the XDG download folder
+    "video_dir": None,             # None: the XDG videos folder (video pages)
     "max_concurrent": 3,
     "connections_per_server": 8,
     "max_retries": 5,              # dm-level retries after aria2 gives up
@@ -75,7 +80,22 @@ def load_config():
     if not config["download_dir"]:
         config["download_dir"] = default_download_dir()
     config["download_dir"] = os.path.expanduser(config["download_dir"])
+    config["video_dir"] = os.path.expanduser(config["video_dir"] or xdg_user_dir("VIDEOS", "~/Videos"))
     return config
+
+
+def save_config_value(key, value):
+    """Change one setting in config.json, keeping the rest of the file."""
+    try:
+        with open(CONFIG_PATH) as f:
+            config = json.load(f)
+        if not isinstance(config, dict):
+            config = {}
+    except (OSError, ValueError):
+        config = {}
+    config[key] = value
+    os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+    write_atomic(CONFIG_PATH, json.dumps(config, indent=2) + "\n", mode=0o644)
 
 
 def ensure_dirs():

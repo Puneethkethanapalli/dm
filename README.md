@@ -22,7 +22,8 @@ Then click the download icon in the bar and press **Set up**. That installs `ari
 ## Use
 
 - **Browser:** downloads you start in Brave or Chromium go to dm automatically (see below).
-- **Panel:** paste a link and press Enter, or press **Clipboard**.
+- **Panel:** paste a link and press Enter, or press **Clipboard**. The speed-limit buttons at the bottom cap the overall speed (Off, 1, 5 or 20 MB/s).
+- **Video pages:** paste a YouTube (or any other [yt-dlp-supported](https://github.com/yt-dlp/yt-dlp/blob/master/supported-sites.md)) page link and dm downloads the video itself with yt-dlp, into your Videos folder. It shows in the panel with progress, pause and retry like any other download.
 - **Bar icon:** left-click opens the panel; right-click downloads the link on the clipboard.
 - **Command line:**
 
@@ -31,6 +32,9 @@ Then click the download icon in the bar and press **Set up**. That installs `ari
   dm add URL --dir ~/ISOs --name arch.iso --sha256 <hex> # fails if the checksum differs
   dm add URL --header 'Cookie: session=…'                # for links that need a login
   dm add --clipboard
+  dm add --media URL                                     # a video page (recognised on its own for known sites)
+  dm add --file URL                                      # the URL itself, even if it's a video page
+  dm limit 2M                                            # cap the overall speed; `dm limit off` removes it
   dm ls                     # IDs can be shortened to any unique prefix
   dm pause ID|all · dm resume ID|all · dm retry ID · dm cancel ID
   dm remove ID|finished     # drop from the list; the files stay
@@ -55,7 +59,7 @@ Setup also installs a small extension for Brave Origin, Brave and Chromium. Rest
 
 If dm isn't running, the website refuses it, or it's a link only the browser can use (one-time links, `blob:` downloads), the browser just carries on as if nothing happened, and the extension's icon briefly shows ↩. Downloads from private windows are never sent to dm.
 
-The extension's toolbar button turns the automatic hand-over on or off and opens the Downloads panel. Right-click any link, image or video and choose **Download with dm** to send just that one.
+The extension's toolbar button turns the automatic hand-over on or off, downloads the current page's video, and opens the Downloads panel. Right-click any link, image or video and choose **Download with dm** to send just that one, or **Download video with dm** on a video page.
 
 Setup adds the extension to the `--load-extension` line of `~/.config/brave-origin-flags.conf` (and `chromium-flags.conf`), the same way Omarchy loads its own extensions, and keeps a `.dm-backup` of the file. If an Omarchy update rewrites that line, run `./setup` again. `bin/dm-browser status` shows what's installed where.
 
@@ -66,10 +70,11 @@ Optional, in `~/.config/dm/config.json`. The engine reads this file when it star
 | Key | Default | |
 |---|---|---|
 | `download_dir` | your XDG Downloads folder | where finished files go |
+| `video_dir` | your XDG Videos folder | where videos from video pages go |
 | `max_concurrent` | `3` | downloads running at once |
 | `connections_per_server` | `8` | parallel connections per download |
 | `max_retries` | `5` | retries after network or server errors (5 s, 15 s, 45 s, 2 min, 5 min apart) |
-| `speed_limit` | `"0"` | overall cap in aria2 syntax, e.g. `"2M"`; `"0"` is unlimited |
+| `speed_limit` | `"0"` | overall cap, e.g. `"2M"`; `"0"` is unlimited. Also set from the panel or with `dm limit`, which apply at once |
 | `inhibit_sleep` | `false` | hold off idle suspend while downloading |
 | `notify` | `true` | notify when a download finishes or fails |
 | `keep_finished` | `50` | finished downloads kept in the list |
@@ -97,6 +102,7 @@ To hide the bar icon while nothing is downloading, run `omarchy bar set io.githu
 - dropped connections, servers that can't resume, and files that change mid-download;
 - redirects, UTF-8 file names, 404/403/503 responses and checksum mismatches;
 - name clashes, pause and resume, and cancel;
+- video pages through yt-dlp (download, pause/resume, failure, site recognition) and the speed limit;
 - `kill -9` of the engine and of aria2, network outages, a full disk, and the security settings.
 
 ```bash

@@ -198,7 +198,7 @@ Panel {
               id: input
               width: parent.width - clipButton.width - parent.spacing
               enabled: root.ready
-              placeholderText: root.ready ? "Paste a link and press Enter" : "Waiting for the engine"
+              placeholderText: root.ready ? "Paste a link or a video page, then Enter" : "Waiting for the engine"
               foreground: root.foreground
               font.family: root.fontFamily
               font.pixelSize: Style.font.body
@@ -242,7 +242,7 @@ Panel {
           Text {
             width: parent.width
             visible: root.ready && root.jobs.length === 0
-            text: "No downloads yet. Paste a link above, run `dm add <url>`, or right-click the bar icon to download the link on your clipboard."
+            text: "No downloads yet. Paste a link or a video page above, start a download in your browser, or right-click the bar icon to download the link on your clipboard."
             textFormat: Text.PlainText
             wrapMode: Text.WordWrap
             color: root.dim
@@ -262,6 +262,36 @@ Panel {
               foreground: root.foreground
               urgent: root.urgent
               fontFamily: root.fontFamily
+            }
+          }
+
+          PanelSeparator { foreground: root.foreground; visible: root.ready }
+
+          // ---------- Speed limit ----------
+          Row {
+            width: parent.width
+            spacing: Style.space(10)
+            visible: root.ready
+
+            Text {
+              anchors.verticalCenter: parent.verticalCenter
+              text: "SPEED LIMIT"
+              textFormat: Text.PlainText
+              color: root.dim
+              font.family: root.fontFamily
+              font.pixelSize: Style.font.caption
+              font.bold: true
+            }
+
+            ButtonGroup {
+              anchors.verticalCenter: parent.verticalCenter
+              options: Model.limitOptions(root.service ? root.service.speedLimit : "0")
+              value: root.service ? root.service.speedLimit : "0"
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              fontSize: Style.font.caption
+              focusable: false
+              onChanged: function(value) { if (root.service) root.service.setLimit(value) }
             }
           }
 
