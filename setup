@@ -1,0 +1,52 @@
+#!/bin/bash
+# Installs dm's engine: aria2, the dm user service, and the `dm` command.
+# Safe to run again (after an update, it restarts the engine on the new code).
+set -euo pipefail
+here="$(cd "$(dirname "$0")" && pwd)"
+unit_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user"
+
+if ! command -v aria2c >/dev/null; then
+  echo "Installing aria2 (the download engine)..."
+  if command -v omarchy-pkg-add >/dev/null; then
+    omarchy-pkg-add aria2
+  else
+    sudo pacman -S --needed --noconfirm aria2
+  fi
+fi
+
+mkdir -p "$HOME/.local/bin" "$unit_dir"
+cat >"$HOME/.local/bin/dm" <<EOF
+#!/bin/sh
+exec /usr/bin/python3 -B "$here/bin/dm" "\$@"
+EOF
+chmod +x "$HOME/.local/bin/dm" "$here/bin/dm" "$here/daemon/dmd.py"
+
+cat >"$unit_dir/dm.service" <<EOF
+[Unit]
+Description=dm download engine (Omarchy bar Downloads plugin)
+ConditionPathExists=$here/daemon/dmd.py
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 -B -s $here/daemon/dmd.py
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+UMask=0022
+NoNewPrivileges=yes
+
+[Install]
+WantedBy=default.target
+EOF
+
+systemctl --user daemon-reload
+systemctl --user enable dm.service >/dev/null 2>&1
+systemctl --user restart dm.service
+
+for _ in $(seq 1 50); do
+  "$HOME/.local/bin/dm" status >/dev/null 2>&1 && break
+  sleep 0.1
+done
+"$HOME/.local/bin/dm" status || { echo "The dm engine did not start; see: journalctl --user -u dm"; exit 1; }
+[[ ":$PATH:" == *":$HOME/.local/bin:"* ]] || echo "Note: ~/.local/bin is not on your PATH, so the dm command won't be found until you add it."
+echo "dm is ready. Try: dm add <url>"

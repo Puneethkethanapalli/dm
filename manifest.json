@@ -1,0 +1,26 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.puneethkethanapalli.dm",
+  "name": "Downloads",
+  "version": "0.1.0",
+  "author": "puneethkethanapalli",
+  "license": "MIT",
+  "homepage": "https://github.com/puneethkethanapalli/dm",
+  "repository": "https://github.com/puneethkethanapalli/dm",
+  "description": "A download manager in the Omarchy bar. Downloads run in a background service (aria2), so they resume after crashes, shell restarts, network drops and reboots.",
+  "kinds": ["service", "bar-widget"],
+  "entryPoints": {
+    "service": "Service.qml",
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Downloads",
+    "description": "Download progress, with pause, resume, retry and add-from-clipboard",
+    "category": "System",
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "hideWhenIdle": false
+    }
+  }
+}

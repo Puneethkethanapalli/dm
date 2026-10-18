@@ -1,0 +1,261 @@
+#!/usr/bin/env python3
+"""dm: command line for the dm download daemon.
+
+  dm add URL... [--dir D] [--name N] [--sha256 H] [--header 'K: V']... [--force]
+  dm add --clipboard          add every link on the clipboard
+  dm ls                       list downloads
+  dm pause|resume|cancel|retry ID|all
+  dm remove ID|finished       drop from the list (files stay)
+  dm open ID / dm reveal ID   open the file / its folder
+  dm status                   engine and totals
+  dm daemon                   run the daemon in the foreground
+
+IDs can be shortened to any unique prefix. --json prints the daemon's reply.
+"""
+
+import sys
+
+# Never write __pycache__ into the plugin folder: the shell reloads every
+# plugin when a file under ~/.config/omarchy/plugins/ changes.
+sys.dont_write_bytecode = True
+
+import argparse
+import json
+import os
+import socket
+import subprocess
+import time
+
+DAEMON_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.realpath(__file__))), "daemon")
+sys.path.insert(0, DAEMON_DIR)
+
+import store  # noqa: E402
+
+
+class Offline(Exception):
+    pass
+
+
+def request(payload, timeout=15):
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as s:
+            s.settimeout(timeout)
+            s.connect(store.SOCKET_PATH)
+            s.sendall((json.dumps(payload) + "\n").encode())
+            data = b""
+            while not data.endswith(b"\n"):
+                chunk = s.recv(65536)
+                if not chunk:
+                    break
+                data += chunk
+    except (FileNotFoundError, ConnectionRefusedError):
+        raise Offline("The dm engine isn't running. Start it with: systemctl --user start dm")
+    except OSError as e:
+        raise Offline("Could not reach the dm engine: %s" % e)
+    try:
+        return json.loads(data)
+    except ValueError:
+        raise Offline("The dm engine sent an unreadable reply")
+
+
+def human_bytes(n):
+    n = float(n or 0)
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if n < 1024 or unit == "TB":
+            return ("%.0f %s" if unit == "B" else "%.1f %s") % (n, unit)
+        n /= 1024
+
+
+def human_time(seconds):
+    seconds = int(seconds)
+    if seconds < 60:
+        return "%ds" % seconds
+    if seconds < 3600:
+        return "%dm %02ds" % divmod(seconds, 60)
+    return "%dh %02dm" % (seconds // 3600, seconds % 3600 // 60)
+
+
+def describe(job):
+    s = job["status"]
+    total, done = job.get("total") or 0, job.get("completed") or 0
+    size = "%s / %s" % (human_bytes(done), human_bytes(total)) if total else human_bytes(done)
+    pct = " %3d%%" % (100 * done // total) if total else ""
+    flag = "  (can't resume)" if job.get("resumable") is False and s not in ("done", "failed", "cancelled") else ""
+    return describe_status(job, s, pct, size) + flag
+
+
+def describe_status(job, s, pct, size):
+    if s == "active":
+        extra = "%s/s" % human_bytes(job.get("speed"))
+        if job.get("eta") is not None:
+            extra += ", %s left" % human_time(job["eta"])
+        return "downloading%s  %s  %s" % (pct, size, extra)
+    if s == "done":
+        return "done  %s  %s" % (human_bytes(total or done), job.get("file") or "")
+    if s == "failed":
+        err = job.get("error") or {}
+        return "failed  %s%s" % (err.get("text", ""), " (%s)" % err["detail"] if err.get("detail") else "")
+    if s == "retrying":
+        if job.get("waiting_network"):
+            return "waiting for network"
+        wait = max(0, int((job.get("next_retry") or time.time()) - time.time()))
+        err = (job.get("error") or {}).get("text", "")
+        return "retrying in %s (%s, attempt %d)" % (human_time(wait), err, job.get("attempts", 0))
+    if s == "paused":
+        return "paused%s  %s" % (pct, size)
+    return s
+
+
+def clipboard_urls():
+    try:
+        out = subprocess.run(["wl-paste", "--no-newline", "--type", "text"], capture_output=True, text=True, timeout=3)
+    except (OSError, subprocess.SubprocessError):
+        raise SystemExit("dm: could not read the clipboard (is wl-paste installed?)")
+    urls = [w for w in out.stdout.split() if "://" in w]
+    if not urls:
+        raise SystemExit("dm: no link on the clipboard")
+    return urls
+
+
+def show(reply, as_json):
+    if as_json:
+        print(json.dumps(reply))
+    elif not reply.get("ok"):
+        print("dm: %s" % reply.get("error", "failed"), file=sys.stderr)
+    return 0 if reply.get("ok") else 1
+
+
+def cmd_add(args):
+    urls = list(args.urls)
+    if args.clipboard:
+        urls += clipboard_urls()
+    if not urls:
+        raise SystemExit("dm: give a URL or --clipboard")
+    if args.name and len(urls) > 1:
+        raise SystemExit("dm: --name only works with a single URL")
+    status, replies = 0, []
+    for url in urls:
+        reply = request({"cmd": "add", "url": url, "dir": args.dir, "name": args.name,
+                         "sha256": args.sha256, "headers": args.header, "force": args.force})
+        replies.append(reply)
+        if not reply.get("ok"):
+            status = 1
+            if not args.json:
+                print("dm: %s: %s" % (url, reply.get("error")), file=sys.stderr)
+        elif not args.json:
+            job = reply["job"]
+            print("%s %s %s" % ("already queued" if reply.get("existing") else "added", job["id"][:8], job["name"]))
+    if args.json:
+        print(json.dumps(replies[0] if len(replies) == 1 else {"ok": status == 0, "results": replies}))
+    return status
+
+
+def cmd_ls(args):
+    reply = request({"cmd": "status"})
+    if args.json or not reply.get("ok"):
+        return show(reply, args.json)
+    jobs = reply["state"]["jobs"]
+    if not jobs:
+        print("No downloads.")
+    for job in jobs:
+        print("%s  %-40.40s  %s" % (job["id"][:8], job["name"], describe(job)))
+    return 0
+
+
+def cmd_status(args):
+    reply = request({"cmd": "status"})
+    if args.json or not reply.get("ok"):
+        return show(reply, args.json)
+    st = reply["state"]
+    engine = st["engine"]
+    print("engine:   %s" % ("aria2 %s" % engine.get("version") if engine.get("ok") else "down: %s" % engine.get("error")))
+    print("network:  %s" % ("online" if st.get("online") else "offline"))
+    print("folder:   %s" % st.get("download_dir"))
+    counts = {k: v for k, v in st["counts"].items() if v}
+    print("jobs:     %s" % (", ".join("%d %s" % (v, k) for k, v in counts.items()) or "none"))
+    if st.get("speed"):
+        print("speed:    %s/s" % human_bytes(st["speed"]))
+    return 0
+
+
+def cmd_simple(args):
+    reply = request({"cmd": args.command, "id": args.id})
+    if reply.get("will_restart") and not args.json:
+        print("Note: %d paused download%s can't resume, so %s will start over from the beginning."
+              % (len(reply["will_restart"]), "" if len(reply["will_restart"]) == 1 else "s",
+                 "it" if len(reply["will_restart"]) == 1 else "they"), file=sys.stderr)
+    return show(reply, args.json)
+
+
+def find_job(ref):
+    reply = request({"cmd": "status"})
+    if not reply.get("ok"):
+        raise SystemExit("dm: %s" % reply.get("error"))
+    matches = [j for j in reply["state"]["jobs"] if j["id"].startswith(ref.lower())]
+    if len(matches) != 1:
+        raise SystemExit("dm: %s matches %d downloads" % (ref, len(matches)))
+    return matches[0]
+
+
+def cmd_open(args):
+    job = find_job(args.id)
+    if args.command == "open":
+        if job["status"] != "done" or not job.get("file"):
+            raise SystemExit("dm: that download hasn't finished")
+        target = job["file"]
+    else:
+        target = os.path.dirname(job["file"]) if job.get("file") else job["dir"]
+    subprocess.Popen(["xdg-open", target], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                     stderr=subprocess.DEVNULL, start_new_session=True)
+    return 0
+
+
+def main():
+    parser = argparse.ArgumentParser(prog="dm", description="Download manager for the Omarchy bar.")
+    parser.add_argument("--json", action="store_true", help="print the daemon's JSON reply")
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    p = sub.add_parser("add", help="download one or more URLs")
+    p.add_argument("urls", nargs="*")
+    p.add_argument("--clipboard", action="store_true", help="add links from the clipboard")
+    p.add_argument("--dir", help="save into this folder")
+    p.add_argument("--name", help="save under this file name")
+    p.add_argument("--sha256", help="expected SHA-256; the download fails if it differs")
+    p.add_argument("--header", action="append", default=[], help="extra request header, 'Name: value'")
+    p.add_argument("--force", action="store_true", help="add even if the URL is already downloading")
+    p.set_defaults(func=cmd_add)
+
+    sub.add_parser("ls", help="list downloads").set_defaults(func=cmd_ls)
+    sub.add_parser("status", help="engine status and totals").set_defaults(func=cmd_status)
+    for name in ("pause", "resume", "cancel", "retry", "remove"):
+        p = sub.add_parser(name, help="%s a download (ID or 'all'%s)" % (name, ", 'finished'" if name == "remove" else ""))
+        p.add_argument("id")
+        p.set_defaults(func=cmd_simple)
+    for name in ("open", "reveal"):
+        p = sub.add_parser(name, help="open the file" if name == "open" else "open the containing folder")
+        p.add_argument("id")
+        p.set_defaults(func=cmd_open)
+    sub.add_parser("daemon", help="run the engine in the foreground")
+
+    # --json is accepted before or after the subcommand.
+    argv = sys.argv[1:]
+    as_json = "--json" in argv
+    argv = [a for a in argv if a != "--json"]
+    args = parser.parse_args(argv)
+    args.json = as_json
+    if args.command == "daemon":
+        import dmd
+        dmd.main()
+        return 0
+    try:
+        return args.func(args)
+    except Offline as e:
+        if args.json:
+            print(json.dumps({"ok": False, "offline": True, "error": str(e)}))
+        else:
+            print("dm: %s" % e, file=sys.stderr)
+        return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main())
