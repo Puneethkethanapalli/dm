@@ -17,6 +17,7 @@ import json
 import os
 import shutil
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -618,6 +619,68 @@ def t_browser_install(inst):
     check(not os.path.exists(host), "native host left behind")
 
 
+def t_browser_restart(inst):
+    # "Add to browser" names the browsers that are open from before (started
+    # without our extension), and `restart` quits and reopens just those. The
+    # browsers are copies of bash named like the real binaries, each holding
+    # its profile's lock; the commands on PATH record how they were reopened.
+    config = os.path.join(inst.root, "browser-config")
+    ours = os.path.join(ROOT, "browser", "extension")
+    binaries, launchers = os.path.join(inst.root, "binaries"), os.path.join(inst.root, "launchers")
+    os.makedirs(binaries)
+    os.makedirs(launchers)
+    launched = os.path.join(inst.root, "launched")
+    procs = {}
+
+    def lock(profile, pid):
+        os.makedirs(os.path.join(config, profile))
+        os.symlink("%s-%d" % (socket.gethostname(), pid), os.path.join(config, profile, "SingletonLock"))
+
+    try:
+        for command, profile, flags, started_with in (
+                ("brave", "BraveSoftware/Brave-Browser", "brave-flags.conf", "/usr/share/a"),
+                ("chromium", "chromium", "chromium-flags.conf", "/usr/share/a," + ours)):
+            binary = os.path.join(binaries, command)
+            shutil.copy("/bin/bash", binary)
+            procs[command] = subprocess.Popen([binary, "-c", "trap 'exit 0' TERM; while :; do sleep 0.1; done",
+                                               "--load-extension=" + started_with])
+            lock(profile, procs[command].pid)
+            with open(os.path.join(config, flags), "w") as f:
+                f.write("--load-extension=/usr/share/a\n")
+            with open(os.path.join(launchers, command), "w") as f:
+                f.write('#!/bin/sh\necho "%s $*" >> %s\n' % (command, launched))
+            os.chmod(os.path.join(launchers, command), 0o755)
+        # A lock that points at some other process must never get it killed.
+        procs["other"] = subprocess.Popen(["sleep", "60"])
+        lock("BraveSoftware/Brave-Browser-Beta", procs["other"].pid)
+        with open(os.path.join(config, "brave-beta-flags.conf"), "w") as f:
+            f.write("--load-extension=/usr/share/a\n")
+        env = dict(inst.env, XDG_CONFIG_HOME=config, PATH=launchers)
+
+        def run(*args):
+            out = subprocess.run([sys.executable, "-B", BROWSER] + list(args) + ["--json"], env=env,
+                                 capture_output=True, text=True, timeout=30)
+            check(out.returncode == 0, "dm-browser %s failed: %s" % (" ".join(args), out.stderr.strip()))
+            return json.loads(out.stdout)
+
+        reply = run("install")
+        check(reply["restart"] == ["Brave"] and reply["running"] == ["Chromium"], "install --json said %s" % reply)
+        reply = run("restart")
+        check(reply["ok"] and reply["restarted"] == ["Brave"] and not reply["failed"], "restart said %s" % reply)
+        check(procs["brave"].wait(5) == 0, "Brave wasn't asked to quit")
+        inst.wait(lambda: os.path.exists(launched), 5, "Brave wasn't opened again")
+        check(open(launched).read().split("\n")[0] == "brave --restore-last-session",
+              "reopened as %r" % open(launched).read())
+        check(procs["chromium"].poll() is None, "restarted Chromium, which already had the extension")
+        check(procs["other"].poll() is None, "killed a process that only looked like a browser lock")
+        check(run("restart")["restarted"] == [], "a second restart found something to do")
+    finally:
+        for proc in procs.values():
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
 def t_marketplace_layout(inst):
     # The marketplace reads any manifest.json at the root or one folder down
     # as a plugin, and takes a submission only with exactly one, at the root.
@@ -691,7 +754,8 @@ TESTS = [
     ("media", t_media), ("media-pause", t_media_pause), ("media-fail", t_media_fail),
     ("media-detect", t_media_detect), ("speed-limit", t_speed_limit),
     ("browser-handoff", t_browser_handoff), ("verify-refuses", t_verify_refuses), ("native-host", t_native_host),
-    ("browser-install", t_browser_install), ("marketplace-layout", t_marketplace_layout),
+    ("browser-install", t_browser_install), ("browser-restart", t_browser_restart),
+    ("marketplace-layout", t_marketplace_layout),
     ("security", t_security), ("config-injection", t_config_injection),
 ]
 

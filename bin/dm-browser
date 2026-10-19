@@ -3,6 +3,8 @@
 
   dm-browser install     register the native host, load the extension
                          (--json: print what it did, for the panel)
+  dm-browser restart     close and reopen browsers that were already open when
+                         the extension was added, with their tabs (--json too)
   dm-browser uninstall   undo both
   dm-browser status      show what's installed where
 
@@ -10,13 +12,18 @@ For every browser whose profile folder exists, the native messaging host
 manifest goes into <profile>/NativeMessagingHosts/. The extension is loaded
 the way Omarchy loads its own: by adding its folder to the --load-extension
 line of the browser's ~/.config/<browser>-flags.conf (only flags files that
-already exist are touched). Browsers need a restart to pick it up.
+already exist are touched). Browsers read that line only when they start, so
+one that's already open needs a full restart (all windows) to pick it up.
 """
 
 import json
 import os
 import shutil
+import signal
+import socket
+import subprocess
 import sys
+import time
 
 sys.dont_write_bytecode = True
 
@@ -95,10 +102,94 @@ def edit_flags(path, add):
     return True
 
 
+def running(command, profile):
+    """The browser's main process ID, from the lock Chromium keeps in its
+    profile folder ("host-PID"). A lock can outlive its process, so the PID
+    must be alive and be that browser."""
+    try:
+        host, _, pid = os.readlink(os.path.join(CONFIG, profile, "SingletonLock")).rpartition("-")
+        exe = os.path.basename(os.readlink("/proc/%s/exe" % pid)).replace(" (deleted)", "")
+    except OSError:
+        return None
+    if host != socket.gethostname() or not pid.isdigit() or not alive(int(pid)) or exe not in command.split("-"):
+        return None
+    return int(pid)
+
+
+def alive(pid):
+    try:
+        with open("/proc/%d/stat" % pid) as f:
+            return f.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return False
+
+
+def has_extension(pid):
+    """Whether the running browser was started with our extension folder."""
+    try:
+        with open("/proc/%d/cmdline" % pid, "rb") as f:
+            args = f.read().decode(errors="replace").split("\0")
+    except OSError:
+        return False
+    return any(a.startswith(FLAG) and extension_dir() in a[len(FLAG):].split(",") for a in args)
+
+
+def needs_restart():
+    """Browsers whose flags file has our extension but that are still running
+    from before it was added: [(name, command, pid)]."""
+    stale = []
+    for name, command, profile, flags in BROWSERS:
+        flags_path = os.path.join(CONFIG, flags)
+        if not os.path.isfile(flags_path) or extension_dir() not in open(flags_path).read():
+            continue
+        pid = running(command, profile)
+        if pid and not has_extension(pid):
+            stale.append((name, command, pid))
+    return stale
+
+
+def launch(command):
+    """Start a browser through its usual command (which reads the flags file),
+    reopening the tabs it saved, in its own unit the way Omarchy starts apps,
+    so it doesn't belong to whatever ran us."""
+    argv = [command, "--restore-last-session"]
+    if shutil.which("uwsm-app"):
+        argv = ["uwsm-app", "--"] + argv
+    if shutil.which("systemd-run"):
+        argv = ["systemd-run", "--user", "--quiet", "--collect", "--unit=dm-browser-%d" % time.time_ns(),
+                "--property=StandardOutput=null", "--property=StandardError=null"] + argv
+    subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                     start_new_session=True)
+
+
+def restart():
+    """Quit each browser in needs_restart() (Chromium saves its session on
+    SIGTERM, as when you quit it) and open it again."""
+    stale = needs_restart()
+    for name, command, pid in stale:
+        os.kill(pid, signal.SIGTERM)
+    deadline = time.time() + 15
+    while time.time() < deadline and any(alive(pid) for _, _, pid in stale):
+        time.sleep(0.2)
+    restarted, failed = [], []
+    for name, command, pid in stale:
+        if alive(pid):
+            failed.append(name)
+        else:
+            launch(command)
+            restarted.append(name)
+    result = {"ok": not failed, "restarted": restarted, "failed": failed}
+    if failed:
+        result["error"] = "%s didn't close in time; quit it (Ctrl+Shift+Q) and open it again" % " and ".join(failed)
+    return result
+
+
 def install():
-    """Returns which browsers got the extension added, already had it, or need it loaded by hand."""
+    """Returns which browsers got the extension added, already had it, or need
+    it loaded by hand, and which of the first two are open: with it loaded
+    ("running"), or from before it was added ("restart")."""
     os.chmod(host_manifest()["path"], 0o755)
-    hosts, added, already, manual = [], [], [], []
+    hosts, added, already, manual, running_now, restart_needed = [], [], [], [], [], []
     for name, command, profile, flags in BROWSERS:
         profile_dir = os.path.join(CONFIG, profile)
         if not os.path.isdir(profile_dir):
@@ -110,10 +201,13 @@ def install():
         flags_path = os.path.join(CONFIG, flags)
         if os.path.isfile(flags_path):
             (added if edit_flags(flags_path, add=True) else already).append(name)
+            pid = running(command, profile)
+            if pid:
+                (running_now if has_extension(pid) else restart_needed).append(name)
         elif shutil.which(command):
             manual.append(name)
     result = {"ok": bool(hosts), "hosts": hosts, "added": added, "already": already, "manual": manual,
-              "extension_dir": extension_dir()}
+              "running": running_now, "restart": restart_needed, "extension_dir": extension_dir()}
     if not hosts:
         result["error"] = "No Brave or Chromium profile found"
     return result
@@ -125,6 +219,9 @@ def print_install(result):
         return
     loaded = result["added"] + result["already"]
     print("Browser extension ready for: %s. Restart the browser to activate it." % ", ".join(loaded or result["hosts"]))
+    if result["restart"]:
+        print("%s is open from before: quit it completely (all windows) and open it again, or run: %s restart"
+              % (" and ".join(result["restart"]), os.path.abspath(__file__)))
     if result["manual"]:
         print("To use it in %s too, open its extensions page, turn on developer mode and"
               " load the folder %s" % (" or ".join(result["manual"]), result["extension_dir"]))
@@ -156,16 +253,21 @@ if __name__ == "__main__":
     as_json = "--json" in sys.argv[1:]
     args = [a for a in sys.argv[1:] if a != "--json"]
     action = args[0] if args else "status"
-    if action == "install":
+    if action in ("install", "restart"):
         try:
-            result = install()
+            result = install() if action == "install" else restart()
         except OSError as e:
             if not as_json:
                 raise
-            result = {"ok": False, "error": "Could not add the extension: %s" % e}
+            result = {"ok": False, "error": "Could not %s: %s" % (
+                "add the extension" if action == "install" else "restart the browser", e)}
         if as_json:
             print(json.dumps(result))
-        else:
+        elif action == "install":
             print_install(result)
+        else:
+            print("Restarted %s." % " and ".join(result["restarted"]) if result["restarted"] else "Nothing to restart.")
+            if result["failed"]:
+                print(result["error"])
     else:
         {"uninstall": uninstall, "status": status}.get(action, status)()

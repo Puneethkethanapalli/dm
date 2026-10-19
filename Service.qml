@@ -170,6 +170,11 @@ Item {
   function addToBrowser(callback) {
     run(["python3", "-B", root.browserPath, "install", "--json"], callback)
   }
+  // Quits and reopens (with their tabs) the browsers that were already open
+  // when the extension was added, so they load it.
+  function restartBrowsers(callback) {
+    run(["python3", "-B", root.browserPath, "restart", "--json"], callback)
+  }
 
   CommandJob {
     id: job

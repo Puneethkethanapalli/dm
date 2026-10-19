@@ -65,11 +65,26 @@ Panel {
     })
   }
 
+  // Browsers that were open from before "Add to browser": the Restart button
+  // shows while there are any.
+  property var staleBrowsers: []
+
   function addToBrowser() {
     if (!service) return
     service.addToBrowser(function(ok, reply, error) {
       if (!ok) return root.say(error || "Could not add the extension to the browser", true)
+      root.staleBrowsers = reply.restart || []
       root.say(Model.browserMessage(reply), false)
+    })
+  }
+
+  function restartBrowsers() {
+    if (!service) return
+    root.say("Restarting " + Model.names(root.staleBrowsers) + "…", false)
+    service.restartBrowsers(function(ok, reply, error) {
+      root.staleBrowsers = reply && reply.failed ? reply.failed : []
+      if (!ok) return root.say(error || "Could not restart the browser", true)
+      root.say(Model.restartMessage(reply), false)
     })
   }
 
@@ -340,6 +355,18 @@ Panel {
               foreground: root.foreground
               fontFamily: root.fontFamily
               onClicked: root.addToBrowser()
+            }
+
+            Button {
+              visible: root.staleBrowsers.length > 0
+              text: root.staleBrowsers.length === 1 ? "Restart " + root.staleBrowsers[0] : "Restart browsers"
+              iconText: "󰜉"
+              tooltipText: "Quit and reopen " + Model.names(root.staleBrowsers)
+                + (root.staleBrowsers.length === 1 ? " so it loads" : " so they load") + " the extension; your tabs come back"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.restartBrowsers()
             }
           }
         }

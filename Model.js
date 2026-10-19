@@ -158,15 +158,28 @@ function names(list) {
 // What "Add to browser" did, from `dm-browser install --json`.
 function browserMessage(reply) {
   var added = reply.added || [], already = reply.already || [], manual = reply.manual || []
+  var restart = reply.restart || [], running = reply.running || []
+  // Added, but not open: the browser loads it when it next starts.
+  var later = added.concat(already).filter(function(n) { return restart.indexOf(n) < 0 && running.indexOf(n) < 0 })
   var parts = []
-  if (added.length > 0)
-    parts.push("Added to " + names(added) + ". Restart " + (added.length === 1 ? "it" : "them") + " to finish.")
-  else if (already.length > 0)
-    parts.push("Already added to " + names(already) + ". If downloads still stay in the browser, restart it.")
+  if (added.length > 0) parts.push("Added to " + names(added) + ".")
+  else if (already.length > 0) parts.push("Already added to " + names(already) + ".")
+  if (restart.length > 0)
+    parts.push(names(restart) + (restart.length === 1 ? " is" : " are") + " open from before, so restart "
+      + (restart.length === 1 ? "it" : "them") + " to load the extension.")
+  if (later.length > 0) parts.push(names(later) + " will load it the next time you open " + (later.length === 1 ? "it." : "them."))
+  if (running.length > 0 && restart.length === 0 && later.length === 0) parts.push("It's loaded and ready.")
   if (manual.length > 0)
     parts.push(names(manual) + (manual.length === 1 ? " has no flags file: turn on developer mode on its extensions page"
       : " have no flags file: turn on developer mode on their extensions pages") + " and load " + reply.extension_dir + ".")
   return parts.length > 0 ? parts.join(" ") : "No Brave or Chromium to add it to."
+}
+
+// After "Restart": from `dm-browser restart --json`.
+function restartMessage(reply) {
+  var restarted = reply.restarted || []
+  if (restarted.length === 0) return "Nothing to restart: the extension is already loaded wherever it's open."
+  return "Restarted " + names(restarted) + " with " + (restarted.length === 1 ? "its" : "their") + " tabs; the extension is loaded."
 }
 
 // Bring `rows` (a ListModel of { jobId }) into the order of `jobs`, touching
