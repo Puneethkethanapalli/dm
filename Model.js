@@ -1,7 +1,8 @@
 .pragma library
 
 // Formatting for the bar widget and panel. Pure functions over the engine's
-// snapshot (see daemon/dmd.py public() and snapshot()).
+// snapshot (see daemon/dmd.py public() and snapshot()), plus syncRows(),
+// which keeps the panel's list in step with it.
 
 function bytes(n) {
   n = Number(n) || 0
@@ -82,7 +83,7 @@ function baseStatus(job, now) {
   case "cancelled":
     return "Cancelled"
   }
-  return job.status
+  return job.status || ""
 }
 
 function heroLine(service) {
@@ -147,4 +148,23 @@ function engineMessage(service) {
     return "aria2 isn't working: " + (service.engineError || "unknown error")
   }
   return ""
+}
+
+// Bring `rows` (a ListModel of { jobId }) into the order of `jobs`, touching
+// only the rows that came, went or moved. The snapshot is a new array every
+// half second while downloading; a list built straight from it recreates
+// every row each time, buttons under the pointer included.
+function syncRows(rows, jobs) {
+  var ids = jobs.map(function(j) { return j.id })
+  for (var i = rows.count - 1; i >= 0; i--) {
+    if (ids.indexOf(rows.get(i).jobId) < 0) rows.remove(i)
+  }
+  for (var k = 0; k < ids.length; k++) {
+    var at = -1
+    for (var r = k; r < rows.count; r++) {
+      if (rows.get(r).jobId === ids[k]) { at = r; break }
+    }
+    if (at < 0) rows.insert(k, { jobId: ids[k] })
+    else if (at !== k) rows.move(at, k, 1)
+  }
 }

@@ -24,6 +24,16 @@ Panel {
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool ready: service ? service.engineState === "ok" : false
   readonly property var jobs: service ? service.jobs : []
+  readonly property var jobsById: {
+    var byId = {}
+    for (var i = 0; i < jobs.length; i++) byId[jobs[i].id] = jobs[i]
+    return byId
+  }
+  // One row per download, kept across snapshots (see Model.syncRows).
+  onJobsChanged: Model.syncRows(rows, jobs)
+  Component.onCompleted: Model.syncRows(rows, jobs)
+
+  ListModel { id: rows }
 
   property string notice: ""
   property bool noticeError: false
@@ -253,12 +263,12 @@ Panel {
           }
 
           Repeater {
-            model: root.jobs
+            model: rows
 
             JobRow {
-              required property var modelData
+              required property string jobId
               width: column.width
-              job: modelData
+              job: root.jobsById[jobId] || ({})
               service: root.service
               now: root.service ? root.service.clock : 0
               foreground: root.foreground
