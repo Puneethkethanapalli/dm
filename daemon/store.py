@@ -28,6 +28,10 @@ SNAPSHOT_PATH = os.path.join(RUNTIME_DIR, "state.json")
 SOCKET_PATH = os.path.join(RUNTIME_DIR, "ctl.sock")
 ARIA2_CONF_PATH = os.path.join(RUNTIME_DIR, "aria2.conf")
 
+# What setup installs outside the plugin folder.
+UNIT_PATH = os.path.join(_xdg("XDG_CONFIG_HOME", "~/.config"), "systemd", "user", "dm.service")
+COMMAND_PATH = os.path.expanduser("~/.local/bin/dm")
+
 
 def xdg_user_dir(name, fallback):
     try:

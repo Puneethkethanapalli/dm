@@ -125,8 +125,9 @@ Set `DM_HOST_LOG=/some/file` to have the browser connector log the messages it h
 ## Uninstall
 
 ```bash
-./uninstall.sh            # stops and removes the engine; add --purge to drop the job list and settings
 omarchy plugin remove io.github.puneethkethanapalli.dm
 ```
+
+The engine notices its folder is gone and undoes setup: it takes the extension off the browsers' flags files (restart the browser to unload it), removes the browser connector, the `dm` service and the `dm` command, and quits. The job list and settings stay, so adding the plugin back and pressing **Set up** resumes unfinished downloads. To drop those too, run `./uninstall.sh --purge` from the plugin folder before removing it.
 
 Downloaded files are never deleted.

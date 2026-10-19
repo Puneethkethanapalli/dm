@@ -84,11 +84,12 @@ class Instance:
                         PYTHONDONTWRITEBYTECODE="1")
         self.base = base_url
         self.wrap = wrap or []
+        self.dmd = DMD
         self.proc = None
         self.log = open(os.path.join(self.root, "dmd.log"), "ab")
 
     def start(self):
-        self.proc = subprocess.Popen(self.wrap + [sys.executable, "-B", DMD], env=self.env,
+        self.proc = subprocess.Popen(self.wrap + [sys.executable, "-B", self.dmd], env=self.env,
                                      stdout=self.log, stderr=subprocess.STDOUT)
         self.wait(lambda: self.state() is not None and self.state()["engine"]["ok"], 10, "dmd did not come up")
 
@@ -681,6 +682,72 @@ def t_browser_restart(inst):
                 proc.wait()
 
 
+def t_plugin_removed(inst):
+    # `omarchy plugin remove` deletes the plugin folder without running
+    # uninstall.sh. The engine setup installed notices and undoes setup itself,
+    # so the browser isn't left loading our extension from a folder that's gone.
+    # An engine that isn't the installed one never touches the installation.
+    inst.stop()
+    plugin = os.path.join(inst.root, "plugins", "io.github.puneethkethanapalli.dm")
+    home, config = os.path.join(inst.root, "home"), inst.env["XDG_CONFIG_HOME"]
+
+    def copy_plugin():
+        for d in ("bin", "browser", "daemon"):
+            shutil.copytree(os.path.join(ROOT, d), os.path.join(plugin, d))
+        shutil.copy(os.path.join(ROOT, "manifest.json"), plugin)
+
+    def write(path, text, mode=0o644):
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            f.write(text)
+        os.chmod(path, mode)
+
+    copy_plugin()
+    os.makedirs(os.path.join(config, "BraveSoftware/Brave-Origin"))
+    flags = os.path.join(config, "brave-origin-flags.conf")
+    before = "--ozone-platform=wayland\n--load-extension=/usr/share/a\n"
+    write(flags, before)
+    host = os.path.join(config, "BraveSoftware/Brave-Origin/NativeMessagingHosts/io.github.puneethkethanapalli.dm.json")
+    unit = os.path.join(config, "systemd/user/dm.service")
+    command = os.path.join(home, ".local/bin/dm")
+    write(command, '#!/bin/sh\nexec /usr/bin/python3 -B "%s/bin/dm" "$@"\n' % plugin, 0o755)
+    fakebin, calls = os.path.join(inst.root, "fakebin"), os.path.join(inst.root, "systemctl-calls")
+    write(os.path.join(fakebin, "systemctl"), '#!/bin/sh\necho "$*" >> %s\n' % calls, 0o755)
+    inst.env.update(HOME=home, PATH=fakebin + os.pathsep + os.environ.get("PATH", ""))
+    out = subprocess.run([sys.executable, "-B", os.path.join(plugin, "bin", "dm-browser"), "install"],
+                         env=inst.env, capture_output=True, text=True, timeout=30)
+    check(out.returncode == 0, "dm-browser install failed: %s" % out.stderr.strip())
+    ours = os.path.join(plugin, "browser", "extension")
+    check(open(flags).read().endswith(",%s\n" % ours), "extension not added: %r" % open(flags).read())
+    inst.dmd = os.path.join(plugin, "daemon", "dmd.py")
+
+    # dm.service runs some other copy: this folder going changes nothing.
+    write(unit, "ExecStart=/usr/bin/python3 -B -s %s\n" % DMD)
+    inst.start()
+    shutil.rmtree(plugin)
+    time.sleep(3)  # dmd looks at least every 2 s
+    check(inst.proc.poll() is None, "an engine that isn't the installed one quit when its folder went")
+    check(ours in open(flags).read() and all(os.path.exists(p) for p in (host, unit, command))
+          and not os.path.exists(calls), "an engine that isn't the installed one undid setup")
+
+    # dm.service runs this copy: its folder going takes the extension off the
+    # flags line and removes the connector, the service and the dm command.
+    copy_plugin()
+    write(unit, "ExecStart=/usr/bin/python3 -B -s %s\n" % inst.dmd)
+    shutil.rmtree(plugin)
+    try:
+        code = inst.proc.wait(10)
+    except subprocess.TimeoutExpired:
+        raise Failure("the engine kept running after its plugin folder was removed")
+    check(code == 0, "the engine exited with %d, so systemd would restart it" % code)
+    check(open(flags).read() == before, "flags file after removal: %r" % open(flags).read())
+    for path in (host, unit, command):
+        check(not os.path.exists(path), "%s left behind" % path)
+    check(open(calls).read().splitlines() == ["--user disable dm.service", "--user daemon-reload"],
+          "systemctl was run as: %r" % open(calls).read())
+    inst.wait(lambda: not inst.aria2_pids(), 5, "aria2 kept running")
+
+
 def t_marketplace_layout(inst):
     # The marketplace reads any manifest.json at the root or one folder down
     # as a plugin, and takes a submission only with exactly one, at the root.
@@ -755,7 +822,7 @@ TESTS = [
     ("media-detect", t_media_detect), ("speed-limit", t_speed_limit),
     ("browser-handoff", t_browser_handoff), ("verify-refuses", t_verify_refuses), ("native-host", t_native_host),
     ("browser-install", t_browser_install), ("browser-restart", t_browser_restart),
-    ("marketplace-layout", t_marketplace_layout),
+    ("plugin-removed", t_plugin_removed), ("marketplace-layout", t_marketplace_layout),
     ("security", t_security), ("config-injection", t_config_injection),
 ]
 

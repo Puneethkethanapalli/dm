@@ -18,6 +18,8 @@ import sys
 sys.dont_write_bytecode = True
 
 import fcntl
+import importlib.machinery
+import importlib.util
 import json
 import os
 import re
@@ -38,6 +40,7 @@ import media
 import store
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+PLUGIN_DIR = os.path.dirname(HERE)
 UNFINISHED = ("queued", "active", "checking", "paused", "retrying", "finishing")
 FINISHED = ("done", "failed", "cancelled")
 IN_ENGINE = ("queued", "active")
@@ -58,6 +61,72 @@ def read_version():
 
 
 VERSION = read_version()
+
+
+# ------------------------------------------------------------------ removal
+#
+# `omarchy plugin remove` deletes the plugin folder without running
+# uninstall.sh. That left the browser loading our extension from a folder
+# that's gone ("Manifest file is missing or unreadable" at every start), and
+# the service, the dm command and the browser connector pointing at nothing.
+# We keep running from memory, so we notice and undo setup ourselves.
+
+def load_browser_setup():
+    """bin/dm-browser, read now so its uninstall still runs once the folder is gone."""
+    loader = importlib.machinery.SourceFileLoader("dm_browser", os.path.join(PLUGIN_DIR, "bin", "dm-browser"))
+    module = importlib.util.module_from_spec(importlib.util.spec_from_loader(loader.name, loader))
+    try:
+        loader.exec_module(module)
+    except Exception as e:
+        store.log("could not load dm-browser: %r" % e)
+        return None
+    return module
+
+
+BROWSER_SETUP = load_browser_setup()
+
+
+def plugin_removed():
+    """Whether the plugin folder is gone and we're the engine setup installed
+    (dm.service runs this file), not a test or a run from a checkout."""
+    if os.path.isdir(PLUGIN_DIR):
+        return False
+    try:
+        with open(store.UNIT_PATH) as f:
+            return os.path.join(HERE, "dmd.py") in f.read()
+    except OSError:
+        return False
+
+
+def systemctl(*args):
+    try:
+        subprocess.run(["systemctl", "--user"] + list(args), stdin=subprocess.DEVNULL,
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def undo_setup():
+    """What uninstall.sh does, except stopping the engine: the caller exits.
+    The job list and settings stay, as without --purge."""
+    store.log("plugin folder %s is gone; removing the browser extension, the service and the dm command" % PLUGIN_DIR)
+    if BROWSER_SETUP:
+        try:
+            BROWSER_SETUP.uninstall()
+        except OSError as e:
+            store.log("could not remove the browser extension: %s" % e)
+    systemctl("disable", "dm.service")
+    try:
+        os.unlink(store.UNIT_PATH)
+    except OSError:
+        pass
+    try:
+        with open(store.COMMAND_PATH) as f:
+            if os.path.join(PLUGIN_DIR, "bin", "dm") in f.read():
+                os.unlink(store.COMMAND_PATH)
+    except OSError:
+        pass
+    systemctl("daemon-reload")
 
 
 def now():
@@ -1044,6 +1113,9 @@ class Daemon:
                 self.publish()
                 busy = any(j["status"] in ("active", "queued", "checking", "finishing") for j in self.jobs)
             self.reap()
+            if plugin_removed():
+                undo_setup()
+                break  # exit 0, so systemd doesn't restart us
             self.wake.wait(0.5 if busy else 2.0)
             self.wake.clear()
         self.shutdown()
