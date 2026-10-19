@@ -1,17 +1,20 @@
 // dm Downloads: hands browser downloads to dm, the Omarchy bar download manager.
 //
-// When a download starts, the browser's copy is paused while dm checks it can
-// fetch the file itself (with the page's cookies, referrer and user agent).
-// Only once dm is actually receiving data is the browser's copy cancelled.
-// If dm is offline, the site refuses it, or it can't get going, the browser
-// simply carries on: a download is never lost in the hand-over.
+// When a download starts, the browser asks extensions for a file name before
+// it asks you where to save it. In that moment the browser's copy is paused
+// while dm checks it can fetch the file itself (with the page's cookies,
+// referrer and user agent). Only once dm is actually receiving data is the
+// browser's copy cancelled, before any "Save as" dialog can open. If dm is
+// offline, the site refuses it, or it can't get going, the browser simply
+// carries on, dialog and all: a download is never lost in the hand-over.
 //
 // The file name is versioned because Omarchy loads extensions with
 // --load-extension: a new script URL forces the browser to pick up new code.
 // Bump it (and the manifest version) whenever this file changes.
 
 const HOST = "io.github.puneethkethanapalli.dm";
-const WAIT_MS = 15000;
+// The browser waits 15s for a file name, then goes ahead without one.
+const WAIT_MS = 10000;
 const POLL_MS = 500;
 
 function native(message) {
@@ -84,68 +87,57 @@ async function flag(text, title) {
   }, 8000);
 }
 
-// Did the browser's own copy complete (all bytes in, file in place)?
-async function finishedInBrowser(id) {
-  const [now] = await chrome.downloads.search({ id });
-  return !!now && now.state === "complete";
-}
-
 // ------------------------------------------------------- automatic takeover
 
-const handling = new Set();
+// The browser holds the download here, file name undecided, until suggest()
+// is called. dm's downloads never get a name: they're cancelled instead, so
+// the browser never reaches its "Save as" dialog.
+chrome.downloads.onDeterminingFilename.addListener((item, suggest) => {
+  takeOver(item)
+    .catch(() => false)
+    .then((taken) => {
+      if (!taken) suggest(); // the browser's own name and, if set, its dialog
+    });
+  return true; // suggest() comes later
+});
 
-chrome.downloads.onCreated.addListener(async (item) => {
-  if (handling.has(item.id) || !(await takeoverEnabled())) return;
+// True once dm has the download and the browser's copy is gone.
+async function takeOver(item) {
+  if (!(await takeoverEnabled())) return false;
   // Private windows stay private; other extensions' downloads are theirs.
-  if (item.incognito || item.byExtensionId) return;
+  if (item.incognito || item.byExtensionId) return false;
   const url = item.finalUrl || item.url;
   // blob:, data: and friends only exist inside the browser.
-  if (!/^https?:\/\//i.test(url) || item.state !== "in_progress") return;
+  if (!/^https?:\/\//i.test(url) || item.state !== "in_progress") return false;
 
-  handling.add(item.id);
   try {
-    try {
-      await chrome.downloads.pause(item.id);
-    } catch (e) {
-      return; // already finished: tiny files beat us to it
-    }
-    if (await finishedInBrowser(item.id)) return; // all bytes arrived before the pause
-    const reply = await native({
-      cmd: "add",
-      ...(await details(url, item.referrer)),
-      mime: item.mime || "",
-      name: baseName(item.filename),
-      verify: true,
-    });
-    if (reply.ok && (reply.existing || (await startedInDm(reply.job.id)))) {
-      await chrome.downloads.cancel(item.id);
-      if (await finishedInBrowser(item.id)) {
-        // The browser completed its copy before the cancel landed: keep one.
-        const job = (await native({ cmd: "job", id: reply.job.id })).job;
-        if (job && job.status === "done") {
-          await chrome.downloads.removeFile(item.id).catch(() => {});
-        } else {
-          if (!reply.existing) {
-            await native({ cmd: "cancel", id: reply.job.id });
-            await native({ cmd: "remove", id: reply.job.id });
-          }
-          return;
-        }
-      }
-      await chrome.downloads.erase({ id: item.id });
-      return;
-    }
-    if (reply.ok && !reply.existing) await native({ cmd: "remove", id: reply.job.id });
-    try {
-      await chrome.downloads.resume(item.id);
-    } catch (e) {
-      // the user cancelled it meanwhile
-    }
-    if (!reply.offline) await flag("↩", `kept in the browser (${reply.error || "dm couldn't start it"})`);
-  } finally {
-    handling.delete(item.id);
+    await chrome.downloads.pause(item.id);
+  } catch (e) {
+    return false; // the user cancelled it already
   }
-});
+  // Until it has a file name the browser can't finish its copy, so there is
+  // no race with it here: dm either takes the download or hands it back.
+  const reply = await native({
+    cmd: "add",
+    ...(await details(url, item.referrer)),
+    mime: item.mime || "",
+    name: baseName(item.filename),
+    verify: true,
+  });
+  if (reply.ok && (reply.existing || (await startedInDm(reply.job.id)))) {
+    await chrome.downloads.cancel(item.id);
+    await chrome.downloads.erase({ id: item.id });
+    return true;
+  }
+  if (reply.ok && !reply.existing) await native({ cmd: "remove", id: reply.job.id });
+  try {
+    await chrome.downloads.resume(item.id);
+  } catch (e) {
+    // the user cancelled it meanwhile
+  }
+  if (!reply.offline) await flag("↩", `kept in the browser (${reply.error || "dm couldn't start it"})`);
+  return false;
+}
 
 // ---------------------------------------------------------- right-click menu
 

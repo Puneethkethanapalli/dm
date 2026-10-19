@@ -57,7 +57,7 @@ Setup also installs a small extension for Brave Origin, Brave and Chromium. Rest
 2. dm checks the website will really give it the file.
 3. Only when dm is actually receiving data does the browser drop its copy; the download then shows up in the bar.
 
-If dm isn't running, the website refuses it, or it's a link only the browser can use (one-time links, `blob:` downloads), the browser just carries on as if nothing happened, and the extension's icon briefly shows ↩. Downloads from private windows are never sent to dm.
+All of this happens before the browser would ask where to save the file, so with "Ask where to save each file before downloading" turned on (Brave's default) you still get no Save dialog for downloads dm takes. If dm isn't running, the website refuses it, or it's a link only the browser can use (one-time links, `blob:` downloads), the browser just carries on as if nothing happened, Save dialog included, and the extension's icon briefly shows ↩. Downloads from private windows are never sent to dm.
 
 The extension's toolbar button turns the automatic hand-over on or off, downloads the current page's video, and opens the Downloads panel. Right-click any link, image or video and choose **Download with dm** to send just that one, or **Download video with dm** on a video page.
 
@@ -111,7 +111,7 @@ python -I tests/run.py
 
 It needs `aria2c`, and `unshare` for the disk-full case. All files go to a temp directory and `$XDG_RUNTIME_DIR/dm-tests`.
 
-`tests/browser.py` runs the extension in a real browser with a throwaway profile. It checks that a members-only download is handed over with its login cookie, and that a one-time link dm can't fetch is finished by the browser instead:
+`tests/browser.py` runs the extension in a real browser with a throwaway profile. It checks that a members-only download is handed over with its login cookie (also with "Ask where to save" on, without the browser's Save dialog opening), and that a one-time link dm can't fetch is finished by the browser instead (and, with asking on, still gets its Save dialog; that check needs `--xvfb`):
 
 ```bash
 python -I tests/browser.py                              # Chromium, headless
