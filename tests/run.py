@@ -557,9 +557,10 @@ def t_speed_limit(inst):
 
 
 def t_browser_install(inst):
-    # dm-browser adds our extension folder to the browser's --load-extension
-    # line, swaps out the folder older versions used, never creates a flags
-    # file, and leaves everything that isn't ours alone.
+    # dm-browser (setup and the panel's "Add to browser") adds our extension
+    # folder to the browser's --load-extension line, swaps out the folder older
+    # versions used, never creates a flags file, and leaves everything that
+    # isn't ours alone.
     config = os.path.join(inst.root, "browser-config")
     for profile in ("BraveSoftware/Brave-Origin", "chromium", "BraveSoftware/Brave-Browser"):
         os.makedirs(os.path.join(config, profile))
@@ -571,11 +572,19 @@ def t_browser_install(inst):
     with open(chromium, "w") as f:
         f.write("--ozone-platform=wayland\n")
     host = os.path.join(config, "BraveSoftware/Brave-Origin/NativeMessagingHosts/io.github.puneethkethanapalli.dm.json")
-    env = dict(inst.env, XDG_CONFIG_HOME=config)
+    # Brave is "installed" (on PATH) but has no flags file, so it's one to load by hand.
+    fakebin = os.path.join(inst.root, "fakebin")
+    os.makedirs(fakebin)
+    with open(os.path.join(fakebin, "brave"), "w") as f:
+        f.write("#!/bin/sh\n")
+    os.chmod(os.path.join(fakebin, "brave"), 0o755)
+    env = dict(inst.env, XDG_CONFIG_HOME=config, PATH=fakebin)
 
-    def run(action):
-        out = subprocess.run([sys.executable, "-B", BROWSER, action], env=env, capture_output=True, text=True, timeout=30)
-        check(out.returncode == 0, "dm-browser %s failed: %s" % (action, out.stderr.strip()))
+    def run(*args, config_home=config):
+        out = subprocess.run([sys.executable, "-B", BROWSER] + list(args), env=dict(env, XDG_CONFIG_HOME=config_home),
+                             capture_output=True, text=True, timeout=30)
+        check(out.returncode == 0, "dm-browser %s failed: %s" % (" ".join(args), out.stderr.strip()))
+        return out.stdout
 
     def loaded(path):
         lines = [line for line in open(path).read().splitlines() if line.startswith("--load-extension=")]
@@ -583,10 +592,21 @@ def t_browser_install(inst):
         return lines[0][len("--load-extension="):].split(",") if lines else []
 
     check(os.path.isfile(os.path.join(ours, "manifest.json")), "no extension in %s" % ours)
-    for _ in range(2):  # a second install changes nothing
-        run("install")
+    # The panel's "Add to browser" reads --json: the first install adds it, a
+    # second finds it already there and changes nothing.
+    both = ["Brave Origin", "Chromium"]
+    for added, already in ((both, []), ([], both)):
+        reply = json.loads(run("install", "--json"))
+        check(reply["ok"] and reply["added"] == added and reply["already"] == already and reply["manual"] == ["Brave"]
+              and reply["extension_dir"] == ours, "install --json said %s" % reply)
         check(loaded(brave) == ["/usr/share/a", "/usr/share/b", ours], "brave line after install: %s" % loaded(brave))
         check(loaded(chromium) == [ours], "chromium line after install: %s" % loaded(chromium))
+    text = run("install")  # what setup prints
+    check("ready for: Brave Origin, Chromium" in text and ours in text, "install printed %r" % text)
+    nowhere = os.path.join(inst.root, "no-browsers")
+    os.makedirs(nowhere)
+    reply = json.loads(run("install", "--json", config_home=nowhere))
+    check(reply["ok"] is False and reply.get("error"), "no browser profile should be an error: %s" % reply)
     for path in (brave, chromium):
         check("--ozone-platform=wayland" in open(path).read(), "other flags lost in %s" % path)
     check(old in open(brave + ".dm-backup").read(), "no backup of the original flags file")

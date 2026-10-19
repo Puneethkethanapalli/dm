@@ -22,6 +22,7 @@ Item {
 
   readonly property string dmPath: localPath("bin/dm")
   readonly property string setupPath: localPath("setup")
+  readonly property string browserPath: localPath("bin/dm-browser")
   readonly property string runtimeDir: Quickshell.env("XDG_RUNTIME_DIR") || "/run/user/1000"
   readonly property string statePath: runtimeDir + "/dm/state.json"
 
@@ -163,6 +164,11 @@ Item {
   }
   function runSetup() {
     Util.execArgv(["omarchy-launch-floating-terminal-with-presentation", "bash " + Util.shellQuote(root.setupPath)])
+  }
+  // The browser half of Set up on its own: the connector, and the extension
+  // on each browser's --load-extension line. Takes effect when the browser restarts.
+  function addToBrowser(callback) {
+    run(["python3", "-B", root.browserPath, "install", "--json"], callback)
   }
 
   CommandJob {

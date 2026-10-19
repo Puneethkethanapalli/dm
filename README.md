@@ -61,7 +61,7 @@ All of this happens before the browser would ask where to save the file, so with
 
 The extension's toolbar button turns the automatic hand-over on or off, downloads the current page's video, and opens the Downloads panel. Right-click any link, image or video and choose **Download with dm** to send just that one, or **Download video with dm** on a video page.
 
-Setup adds the extension to the `--load-extension` line of `~/.config/brave-origin-flags.conf` (and `chromium-flags.conf`), the same way Omarchy loads its own extensions, and keeps a `.dm-backup` of the file. If an Omarchy update rewrites that line, run `./setup` again. `bin/dm-browser status` shows what's installed where.
+Setup adds the extension to the `--load-extension` line of `~/.config/brave-origin-flags.conf` (and `chromium-flags.conf`), the same way Omarchy loads its own extensions, and keeps a `.dm-backup` of the file. The panel's **Add to browser** button does just this part again: use it if an Omarchy update rewrites that line, or after installing another browser, then restart the browser. `bin/dm-browser status` shows what's installed where.
 
 ## Settings
 

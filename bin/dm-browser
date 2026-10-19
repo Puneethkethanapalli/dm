@@ -2,6 +2,7 @@
 """Install or remove dm's browser integration for Chromium-family browsers.
 
   dm-browser install     register the native host, load the extension
+                         (--json: print what it did, for the panel)
   dm-browser uninstall   undo both
   dm-browser status      show what's installed where
 
@@ -95,8 +96,9 @@ def edit_flags(path, add):
 
 
 def install():
+    """Returns which browsers got the extension added, already had it, or need it loaded by hand."""
     os.chmod(host_manifest()["path"], 0o755)
-    hosts, loaded, manual = [], [], []
+    hosts, added, already, manual = [], [], [], []
     for name, command, profile, flags in BROWSERS:
         profile_dir = os.path.join(CONFIG, profile)
         if not os.path.isdir(profile_dir):
@@ -107,17 +109,25 @@ def install():
         hosts.append(name)
         flags_path = os.path.join(CONFIG, flags)
         if os.path.isfile(flags_path):
-            edit_flags(flags_path, add=True)
-            loaded.append(name)
+            (added if edit_flags(flags_path, add=True) else already).append(name)
         elif shutil.which(command):
             manual.append(name)
+    result = {"ok": bool(hosts), "hosts": hosts, "added": added, "already": already, "manual": manual,
+              "extension_dir": extension_dir()}
     if not hosts:
+        result["error"] = "No Brave or Chromium profile found"
+    return result
+
+
+def print_install(result):
+    if not result["hosts"]:
         print("No Chromium-family browser profile found; skipped the browser extension.")
         return
-    print("Browser extension ready for: %s. Restart the browser to activate it." % ", ".join(loaded or hosts))
-    if manual:
+    loaded = result["added"] + result["already"]
+    print("Browser extension ready for: %s. Restart the browser to activate it." % ", ".join(loaded or result["hosts"]))
+    if result["manual"]:
         print("To use it in %s too, open its extensions page, turn on developer mode and"
-              " load the folder %s" % (" or ".join(manual), extension_dir()))
+              " load the folder %s" % (" or ".join(result["manual"]), result["extension_dir"]))
 
 
 def uninstall():
@@ -142,5 +152,20 @@ def status():
 
 
 if __name__ == "__main__":
-    action = sys.argv[1] if len(sys.argv) > 1 else "status"
-    {"install": install, "uninstall": uninstall, "status": status}.get(action, status)()
+    # --json (install only) prints the result for the panel's "Add to browser".
+    as_json = "--json" in sys.argv[1:]
+    args = [a for a in sys.argv[1:] if a != "--json"]
+    action = args[0] if args else "status"
+    if action == "install":
+        try:
+            result = install()
+        except OSError as e:
+            if not as_json:
+                raise
+            result = {"ok": False, "error": "Could not add the extension: %s" % e}
+        if as_json:
+            print(json.dumps(result))
+        else:
+            print_install(result)
+    else:
+        {"uninstall": uninstall, "status": status}.get(action, status)()

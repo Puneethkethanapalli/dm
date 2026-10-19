@@ -65,6 +65,14 @@ Panel {
     })
   }
 
+  function addToBrowser() {
+    if (!service) return
+    service.addToBrowser(function(ok, reply, error) {
+      if (!ok) return root.say(error || "Could not add the extension to the browser", true)
+      root.say(Model.browserMessage(reply), false)
+    })
+  }
+
   onOpenedChanged: {
     if (service) service.acknowledgeFailures()
     if (opened) {
@@ -311,9 +319,10 @@ Panel {
           Row {
             width: parent.width
             spacing: Style.space(6)
-            visible: root.service && root.service.finishedCount > 0
+            visible: root.ready
 
             Button {
+              visible: root.service && root.service.finishedCount > 0
               text: "Clear finished"
               iconText: "󰆴"
               tooltipText: "Remove finished downloads from the list; the files stay"
@@ -321,6 +330,16 @@ Panel {
               foreground: root.foreground
               fontFamily: root.fontFamily
               onClicked: root.service.clearFinished()
+            }
+
+            Button {
+              text: "Add to browser"
+              iconText: "󰐱"
+              tooltipText: "Send Brave and Chromium downloads to dm (restart the browser afterwards)"
+              bordered: true
+              foreground: root.foreground
+              fontFamily: root.fontFamily
+              onClicked: root.addToBrowser()
             }
           }
         }

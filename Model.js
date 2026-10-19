@@ -150,6 +150,25 @@ function engineMessage(service) {
   return ""
 }
 
+// "Brave", "Brave and Chromium", "Brave, Brave Beta and Chromium"
+function names(list) {
+  return list.length < 2 ? list.join("") : list.slice(0, -1).join(", ") + " and " + list[list.length - 1]
+}
+
+// What "Add to browser" did, from `dm-browser install --json`.
+function browserMessage(reply) {
+  var added = reply.added || [], already = reply.already || [], manual = reply.manual || []
+  var parts = []
+  if (added.length > 0)
+    parts.push("Added to " + names(added) + ". Restart " + (added.length === 1 ? "it" : "them") + " to finish.")
+  else if (already.length > 0)
+    parts.push("Already added to " + names(already) + ". If downloads still stay in the browser, restart it.")
+  if (manual.length > 0)
+    parts.push(names(manual) + (manual.length === 1 ? " has no flags file: turn on developer mode on its extensions page"
+      : " have no flags file: turn on developer mode on their extensions pages") + " and load " + reply.extension_dir + ".")
+  return parts.length > 0 ? parts.join(" ") : "No Brave or Chromium to add it to."
+}
+
 // Bring `rows` (a ListModel of { jobId }) into the order of `jobs`, touching
 // only the rows that came, went or moved. The snapshot is a new array every
 // half second while downloading; a list built straight from it recreates
