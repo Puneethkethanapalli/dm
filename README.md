@@ -102,6 +102,7 @@ To hide the bar icon while nothing is downloading, run `omarchy bar set io.githu
 - dropped connections, servers that can't resume, and files that change mid-download;
 - redirects, UTF-8 file names, 404/403/503 responses and checksum mismatches;
 - name clashes, pause and resume, and cancel;
+- what `dm ls` and `dm status` print for downloads in every state;
 - video pages through yt-dlp (download, pause/resume, failure, site recognition) and the speed limit;
 - `kill -9` of the engine and of aria2, network outages, a full disk, and the security settings.
 

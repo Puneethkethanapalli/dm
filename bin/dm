@@ -67,7 +67,7 @@ def describe_status(job, s, pct, size):
             extra += ", %s left" % human_time(job["eta"])
         return "downloading%s  %s  %s" % (pct, size, extra)
     if s == "done":
-        return "done  %s  %s" % (human_bytes(total or done), job.get("file") or "")
+        return "done  %s  %s" % (human_bytes(job.get("total") or job.get("completed")), job.get("file") or "")
     if s == "failed":
         err = job.get("error") or {}
         return "failed  %s%s" % (err.get("text", ""), " (%s)" % err["detail"] if err.get("detail") else "")

@@ -11,6 +11,8 @@ no half-written file in the download folder.
 
 import argparse
 import hashlib
+import importlib.machinery
+import importlib.util
 import json
 import os
 import shutil
@@ -113,6 +115,12 @@ class Instance:
             return json.loads(out.stdout)
         except ValueError:
             raise Failure("dm %s printed %r %r" % (" ".join(args), out.stdout, out.stderr))
+
+    def dm_text(self, *args):
+        """The CLI's plain output, as a person sees it: (exit code, stdout, stderr)."""
+        out = subprocess.run([sys.executable, "-B", DM] + list(args), env=self.env,
+                             capture_output=True, text=True, timeout=30)
+        return out.returncode, out.stdout, out.stderr
 
     def dm_raw(self, payload):
         """Send a raw command to the engine's socket, as the browser host does."""
@@ -294,6 +302,56 @@ def t_cancel(inst):
     check(inst.dm("cancel", jid)["ok"], "cancel refused")
     check(inst.job(jid)["status"] == "cancelled", "not cancelled")
     inst.assert_clean([])
+
+
+def t_cli_text(inst):
+    # Every other test reads --json; this is what `dm ls` and `dm status` print
+    # for a person, with a download in each state.
+    done = inst.add("/ok/listed.bin?size=%d" % SIZE)
+    expect_done(inst, done, "listed.bin", SIZE)
+    failed = inst.add("/status/404")
+    check(inst.finish(failed, 20)["status"] == "failed", "404 didn't fail")
+    cancelled = inst.add("/slow/dropped.bin?size=%d&rate=%d" % (2 << 20, 256 << 10))
+    inst.wait(lambda: inst.job(cancelled)["completed"] > 0, 20, "never started")
+    check(inst.dm("cancel", cancelled)["ok"], "cancel refused")
+    paused = inst.add("/slow/held.bin?size=%d&rate=%d" % (4 << 20, 256 << 10))
+    inst.wait(lambda: inst.job(paused)["completed"] > 0, 20, "never started")
+    check(inst.dm("pause", paused)["ok"], "pause refused")
+    active = inst.add("/slow/running.bin?size=%d&rate=%d" % (4 << 20, 256 << 10))
+    inst.wait(lambda: inst.job(active)["status"] == "active" and inst.job(active)["completed"] > 0, 20, "never started")
+
+    code, out, err = inst.dm_text("ls")
+    check(code == 0 and not err, "dm ls exited %d: %s" % (code, err.strip()))
+    lines = {line[:8]: line for line in out.splitlines()}
+    for jid, word in ((done, "done"), (failed, "failed"), (cancelled, "cancelled"),
+                      (paused, "paused"), (active, "downloading")):
+        check(word in lines.get(jid[:8], ""), "dm ls shows %r for a %s download" % (lines.get(jid[:8]), word))
+    check("4.0 MB" in lines[done[:8]] and "listed.bin" in lines[done[:8]], "done line: %r" % lines[done[:8]])
+
+    code, out, err = inst.dm_text("status")
+    check(code == 0 and not err, "dm status exited %d: %s" % (code, err.strip()))
+    for word in ("1 done", "1 failed", "1 cancelled", "1 paused", "1 active"):
+        check(word in out, "dm status doesn't say %r: %r" % (word, out))
+
+    # States that are hard to catch live (retrying, waiting for the network,
+    # checking, finishing), with and without sizes, errors and an ETA.
+    loader = importlib.machinery.SourceFileLoader("dm_cli", DM)
+    cli = importlib.util.module_from_spec(importlib.util.spec_from_loader("dm_cli", loader))
+    loader.exec_module(cli)
+    base = inst.job(active)
+    bare = {"total": 0, "completed": 0, "speed": 0, "eta": None, "error": None, "file": None, "next_retry": None}
+    stuck = {"resumable": False, "waiting_network": True, "next_retry": time.time() + 30, "attempts": 2,
+             "error": {"code": "network", "text": "Connection reset", "detail": "peer closed"}}
+    for status in ("queued", "checking", "active", "paused", "retrying", "finishing", "done", "failed", "cancelled"):
+        for extra in ({}, bare, stuck):
+            try:
+                text = cli.describe(dict(base, status=status, **extra))
+            except Exception as e:
+                raise Failure("dm ls can't describe a %s download %s: %r" % (status, extra, e))
+            check(isinstance(text, str) and text, "empty description for a %s download" % status)
+    check(cli.describe(dict(base, status="retrying", **stuck)).startswith("waiting for network"), "offline retry not shown")
+    check(cli.describe(dict(base, status="retrying", waiting_network=False, next_retry=time.time() + 90, attempts=1,
+                            error={"text": "Timed out"})).startswith("retrying in 1m"), "retry wait not shown")
 
 
 def t_kill_daemon(inst):
@@ -557,7 +615,8 @@ TESTS = [
     ("file-changes", t_file_changes), ("redirects", t_redirects), ("utf8-name", t_utf8_name),
     ("not-found", t_not_found), ("forbidden", t_forbidden), ("server-error-retries", t_server_error_retries),
     ("checksum", t_checksum), ("same-name-twice", t_same_name_twice), ("pause-resume", t_pause_resume),
-    ("cancel", t_cancel), ("kill-daemon", t_kill_daemon), ("kill-aria2", t_kill_aria2), ("network-outage", t_network_outage),
+    ("cancel", t_cancel), ("cli-text", t_cli_text),
+    ("kill-daemon", t_kill_daemon), ("kill-aria2", t_kill_aria2), ("network-outage", t_network_outage),
     ("media", t_media), ("media-pause", t_media_pause), ("media-fail", t_media_fail),
     ("media-detect", t_media_detect), ("speed-limit", t_speed_limit),
     ("browser-handoff", t_browser_handoff), ("verify-refuses", t_verify_refuses), ("native-host", t_native_host),
