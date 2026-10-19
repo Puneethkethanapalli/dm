@@ -64,6 +64,33 @@ Item {
   readonly property bool outdated: live && manifest && manifest.version
     && String(snapshot.version) !== String(manifest.version)
 
+  // ---------------------------------------------------------------- events
+
+  // What changed since the last snapshot, for the bar icon to react to. The
+  // first snapshot only sets the baseline, so a shell restart is quiet.
+  signal jobAdded(var job)
+  signal jobDone(var job)
+  signal jobFailed(var job)
+
+  property var _statusById: null
+
+  function _compare(jobs) {
+    var before = root._statusById
+    var now = {}
+    for (var i = 0; i < jobs.length; i++) now[jobs[i].id] = jobs[i].status
+    root._statusById = now
+    if (before === null) return
+    for (var j = 0; j < jobs.length; j++) {
+      var job = jobs[j]
+      var was = before[job.id]
+      if (was === undefined) root.jobAdded(job)
+      // A small file can be added and done between two snapshots.
+      if (was === job.status) continue
+      if (job.status === "done") root.jobDone(job)
+      else if (job.status === "failed") root.jobFailed(job)
+    }
+  }
+
   // ------------------------------------------------------------- commands
 
   // Commands run one at a time, in order.
@@ -162,7 +189,10 @@ Item {
     onFileChanged: reload()
     onLoaded: {
       var parsed = root.parse(text())
-      if (parsed) root.snapshot = parsed
+      if (parsed) {
+        root.snapshot = parsed
+        root._compare(Array.isArray(parsed.jobs) ? parsed.jobs : [])
+      }
       root.clock = Date.now() / 1000
     }
     onLoadFailed: root.snapshot = null

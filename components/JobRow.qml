@@ -12,6 +12,7 @@ Item {
   property real now: 0
   property color foreground: Color.foreground
   property color urgent: Color.urgent
+  property color highlight: Color.bar.active
   property string fontFamily: Style.font.family
 
   readonly property color dim: Qt.darker(foreground, 1.4)
@@ -130,7 +131,7 @@ Item {
         height: parent.height
         radius: parent.radius
         width: parent.width * Math.max(0, row.fraction)
-        color: row.status === "failed" ? row.urgent : (row.status === "paused" ? row.dim : Color.accent)
+        color: row.status === "failed" ? row.urgent : (row.status === "paused" ? row.dim : row.highlight)
         Behavior on width { NumberAnimation { duration: 400; easing.type: Easing.OutCubic } }
       }
     }

@@ -17,7 +17,9 @@ Panel {
 
   readonly property var service: bar && bar.shell ? bar.shell.serviceFor(root.moduleName) : null
   readonly property color foreground: bar ? bar.foreground : Color.foreground
-  readonly property color urgent: bar ? bar.urgent : Color.urgent
+  // As on the bar icon: the bar's highlight for progress, the theme's red for failures.
+  readonly property color highlight: bar ? bar.urgent : Color.bar.active
+  readonly property color urgent: Color.urgent
   readonly property color dim: Qt.darker(foreground, 1.4)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property bool ready: service ? service.engineState === "ok" : false
@@ -261,6 +263,7 @@ Panel {
               now: root.service ? root.service.clock : 0
               foreground: root.foreground
               urgent: root.urgent
+              highlight: root.highlight
               fontFamily: root.fontFamily
             }
           }

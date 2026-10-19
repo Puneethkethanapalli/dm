@@ -24,7 +24,7 @@ Then click the download icon in the bar and press **Set up**. That installs `ari
 - **Browser:** downloads you start in Brave or Chromium go to dm automatically (see below).
 - **Panel:** paste a link and press Enter, or press **Clipboard**. The speed-limit buttons at the bottom cap the overall speed (Off, 1, 5 or 20 MB/s).
 - **Video pages:** paste a YouTube (or any other [yt-dlp-supported](https://github.com/yt-dlp/yt-dlp/blob/master/supported-sites.md)) page link and dm downloads the video itself with yt-dlp, into your Videos folder. It shows in the panel with progress, pause and retry like any other download.
-- **Bar icon:** left-click opens the panel; right-click downloads the link on the clipboard.
+- **Bar icon:** left-click opens the panel; right-click downloads the link on the clipboard. The icon shows what's happening without opening anything: it lights up in the bar's highlight colour while downloading, the arrow drops in when a download is added (from the browser too) and dips now and then while data is coming in, with the overall progress filling the line underneath; a tick pops up when a download finishes, and a red warning sign shakes when one fails. Each of these also shows a short notice under the icon with the file name and progress, which stays while you hover it and opens the panel when clicked. It never takes focus or closes a panel you have open.
 - **Command line:**
 
   ```bash
