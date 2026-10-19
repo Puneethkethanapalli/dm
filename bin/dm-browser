@@ -35,10 +35,14 @@ BROWSERS = [
 ]
 
 FLAG = "--load-extension="
+# Where the extension lived before (the marketplace counts any manifest.json
+# one folder down as a second plugin). Install swaps these for the current
+# folder, so an updated plugin doesn't leave the browser loading a gone path.
+OLD_EXTENSION_DIRS = ["extension"]
 
 
 def extension_dir():
-    return os.path.join(PLUGIN_DIR, "extension")
+    return os.path.join(PLUGIN_DIR, "browser", "extension")
 
 
 def host_manifest():
@@ -63,12 +67,13 @@ def edit_flags(path, add):
     with open(path) as f:
         lines = f.read().splitlines()
     ours = extension_dir()
+    stale = {ours} | {os.path.join(PLUGIN_DIR, d) for d in OLD_EXTENSION_DIRS}
     found = False
     out = []
     for line in lines:
         if line.strip().startswith(FLAG):
             found = True
-            paths = [p for p in line.strip()[len(FLAG):].split(",") if p and p != ours]
+            paths = [p for p in line.strip()[len(FLAG):].split(",") if p and p not in stale]
             if add:
                 paths.append(ours)
             if paths:

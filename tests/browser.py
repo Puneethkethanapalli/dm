@@ -40,7 +40,7 @@ sys.dont_write_bytecode = True
 import run  # noqa: E402
 from run import Failure, check, expect_done, server, sha_file  # noqa: E402
 
-EXTENSION = os.path.join(ROOT, "extension")
+EXTENSION = os.path.join(ROOT, "browser", "extension")
 HOST = "io.github.puneethkethanapalli.dm"
 EXTENSION_ID = "pmcgbhhhniblapdhpgcjchlgdbjimknf"
 SIZE = 4 << 20

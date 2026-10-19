@@ -34,6 +34,7 @@ import server  # noqa: E402
 
 DMD = os.path.join(ROOT, "daemon", "dmd.py")
 DM = os.path.join(ROOT, "bin", "dm")
+BROWSER = os.path.join(ROOT, "bin", "dm-browser")
 
 
 class Failure(Exception):
@@ -555,6 +556,56 @@ def t_speed_limit(inst):
     check(inst.dm("limit", "off")["speed_limit"] == "0", "limit not removed")
 
 
+def t_browser_install(inst):
+    # dm-browser adds our extension folder to the browser's --load-extension
+    # line, swaps out the folder older versions used, never creates a flags
+    # file, and leaves everything that isn't ours alone.
+    config = os.path.join(inst.root, "browser-config")
+    for profile in ("BraveSoftware/Brave-Origin", "chromium", "BraveSoftware/Brave-Browser"):
+        os.makedirs(os.path.join(config, profile))
+    ours, old = os.path.join(ROOT, "browser", "extension"), os.path.join(ROOT, "extension")
+    brave = os.path.join(config, "brave-origin-flags.conf")
+    with open(brave, "w") as f:
+        f.write("--ozone-platform=wayland\n--load-extension=/usr/share/a,%s,/usr/share/b\n" % old)
+    chromium = os.path.join(config, "chromium-flags.conf")
+    with open(chromium, "w") as f:
+        f.write("--ozone-platform=wayland\n")
+    host = os.path.join(config, "BraveSoftware/Brave-Origin/NativeMessagingHosts/io.github.puneethkethanapalli.dm.json")
+    env = dict(inst.env, XDG_CONFIG_HOME=config)
+
+    def run(action):
+        out = subprocess.run([sys.executable, "-B", BROWSER, action], env=env, capture_output=True, text=True, timeout=30)
+        check(out.returncode == 0, "dm-browser %s failed: %s" % (action, out.stderr.strip()))
+
+    def loaded(path):
+        lines = [line for line in open(path).read().splitlines() if line.startswith("--load-extension=")]
+        check(len(lines) <= 1, "%s has %d --load-extension lines" % (path, len(lines)))
+        return lines[0][len("--load-extension="):].split(",") if lines else []
+
+    check(os.path.isfile(os.path.join(ours, "manifest.json")), "no extension in %s" % ours)
+    for _ in range(2):  # a second install changes nothing
+        run("install")
+        check(loaded(brave) == ["/usr/share/a", "/usr/share/b", ours], "brave line after install: %s" % loaded(brave))
+        check(loaded(chromium) == [ours], "chromium line after install: %s" % loaded(chromium))
+    for path in (brave, chromium):
+        check("--ozone-platform=wayland" in open(path).read(), "other flags lost in %s" % path)
+    check(old in open(brave + ".dm-backup").read(), "no backup of the original flags file")
+    check(not os.path.exists(os.path.join(config, "brave-flags.conf")), "created a flags file that wasn't there")
+    check(json.load(open(host))["path"] == os.path.join(ROOT, "bin", "dm-native-host"), "native host points elsewhere")
+    run("uninstall")
+    check(loaded(brave) == ["/usr/share/a", "/usr/share/b"], "brave line after uninstall: %s" % loaded(brave))
+    check(loaded(chromium) == [], "chromium line after uninstall: %s" % loaded(chromium))
+    check(not os.path.exists(host), "native host left behind")
+
+
+def t_marketplace_layout(inst):
+    # The marketplace reads any manifest.json at the root or one folder down
+    # as a plugin, and takes a submission only with exactly one, at the root.
+    found = sorted(name for name in ["manifest.json"] + [d + "/manifest.json" for d in os.listdir(ROOT)]
+                   if os.path.isfile(os.path.join(ROOT, name)))
+    check(found == ["manifest.json"], "plugin manifests the marketplace would see: %s" % found)
+
+
 def t_security(inst):
     run = os.path.join(inst.run_dir, "dm")
     for name in ("ctl.sock", "aria2.conf"):
@@ -620,6 +671,7 @@ TESTS = [
     ("media", t_media), ("media-pause", t_media_pause), ("media-fail", t_media_fail),
     ("media-detect", t_media_detect), ("speed-limit", t_speed_limit),
     ("browser-handoff", t_browser_handoff), ("verify-refuses", t_verify_refuses), ("native-host", t_native_host),
+    ("browser-install", t_browser_install), ("marketplace-layout", t_marketplace_layout),
     ("security", t_security), ("config-injection", t_config_injection),
 ]
 
